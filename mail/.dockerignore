@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+*.exe
+*.dll
+*.exe~
+*.dll~
+*.exe.config
+
+# Go build artifacts
+mail
+main
+*.exe
+
+# Data
+*.json
+schedule.json
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+README*
