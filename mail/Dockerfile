@@ -7,10 +7,11 @@ ENV TZ=Europe/Saratov
 
 WORKDIR /app
 
-# Копирование файлов модулей
+# Копирование файлов модулей и скраппера (контекст = ./mail, scrapper — подпапка)
 COPY go.mod go.sum ./
-COPY ../scrapper /app/scrapper
+COPY scrapper /app/scrapper
 RUN go mod download
+RUN cd /app/scrapper && go mod download
 
 # Копирование исходного кода
 COPY . .
