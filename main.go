@@ -26,7 +26,7 @@ type Lesson struct {
 	Teacher   string `json:"teacher"`
 	Room      string `json:"room"`
 	Subgroup  string `json:"subgroup"`
-	Numerator bool   `json:"numerator"`
+	Numerator int    `json:"numerator"`
 }
 
 type GroupDoc struct {
@@ -139,6 +139,7 @@ func extractUpdatedAtWithTime(root *goquery.Selection) string {
 	}
 
 	var firstTime string
+
 	for _, sel := range candidates {
 		if sel == nil || sel.Length() == 0 {
 			continue
@@ -175,6 +176,7 @@ func extractUpdatedAtWithTime(root *goquery.Selection) string {
 	}
 	return ""
 }
+
 func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson *goquery.Selection) {
 	lessonType := ""
 	switch {
@@ -186,7 +188,14 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 		lessonType = "ЛАБОРАТОРНАЯ"
 	}
 
-	numerator := strings.Contains(strings.ToUpper(lesson.Find(".lesson-prop__num, .num").Text()), "Ч")
+	// 0 - еженедельно, 1 - числитель, 2 - знаменатель
+	var numerator int
+	if lesson.Find(".lesson-prop__num").Length() > 0 {
+		numerator = 1
+	} else if lesson.Find(".lesson-prop__denom").Length() > 0 {
+		numerator = 2
+	}
+
 	name := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-name, .name").Text()))
 	teacher := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-teacher, .teacher").Text()))
 	teacher = strings.Join(strings.Fields(strings.ReplaceAll(teacher, "\n", " ")), " ")
@@ -196,6 +205,7 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 	if name == "" && teacher == "" && room == "" && lessonType == "" {
 		return
 	}
+
 	mu.Lock()
 	group.Schedule = append(group.Schedule, Lesson{
 		Time:      timeSlot,
@@ -218,11 +228,12 @@ func main() {
 		colly.MaxDepth(2),
 		colly.Async(true),
 	)
-	c.SetRequestTimeout(05 * time.Second)
+	c.SetRequestTimeout(5 * time.Second)
 	_ = c.Limit(&colly.LimitRule{
 		DomainGlob:  "*sgu.ru*",
 		Parallelism: parallelism,
 	})
+
 	var (
 		mu           sync.Mutex
 		parsedGroups uint64
@@ -230,6 +241,7 @@ func main() {
 		visitedLink  = make(map[string]struct{})  // защита от дублей
 		output       = Output{GeneratedAt: time.Now()}
 	)
+
 	// скорость «групп/мин»
 	stopGroups := startRateLoggerLabeled(&parsedGroups, 10*time.Second, "групп")
 	defer stopGroups()
@@ -244,7 +256,7 @@ func main() {
 		if p := e.Request.URL.Path; p != "/schedule" && p != "/schedule/" {
 			return
 		}
-
+		
 		e.DOM.Find("a[href^='/schedule/']").Each(func(_ int, a *goquery.Selection) {
 			href := strings.TrimSpace(a.AttrOr("href", ""))
 			if href == "" {
@@ -313,7 +325,7 @@ func main() {
 		}
 		mu.Unlock()
 		if group == nil {
-			log.Printf("⚠️  Не нашли группу по URL: %s", urlStr)
+			log.Printf("Не нашли группу по URL: %s", urlStr)
 			return
 		}
 
