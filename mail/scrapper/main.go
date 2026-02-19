@@ -16,7 +16,7 @@ import (
 	"github.com/gocolly/colly/v2"
 )
 
-// ====== ДАННЫЕ
+// ДАННЫЕ
 
 type Lesson struct {
 	Time      string `json:"time"`
@@ -26,11 +26,11 @@ type Lesson struct {
 	Teacher   string `json:"teacher"`
 	Room      string `json:"room"`
 	Subgroup  string `json:"subgroup"`
-	Numerator bool   `json:"numerator"`
+	Numerator int    `json:"numerator"`
 }
 
 type GroupDoc struct {
-	Faculty   string   `json:"faculty"`    // СЛАГ факультета: bf, uf, knt ...
+	Faculty   string   `json:"faculty"`    // СЛАГ факультета: bf, uf, knt
 	Group     string   `json:"group"`      // имя группы (текст ссылки или код)
 	Form      string   `json:"form"`       // сырой токен: do | zo | vo
 	Tag       string   `json:"tag"`        // <slug>/<form>/<code>, напр. knt/do/411
@@ -44,7 +44,7 @@ type Output struct {
 	Groups      []*GroupDoc `json:"groups"`
 }
 
-// ====== УТИЛИТЫ
+// УТИЛИТЫ
 
 func firstNonEmpty(s ...string) string {
 	for _, v := range s {
@@ -68,7 +68,6 @@ func stripQueryAndHash(u string) string {
 func canonicalize(raw string) string {
 	raw = strings.TrimSpace(raw)
 	raw = stripQueryAndHash(raw)
-	// Раскодируем URL перед нормализацией
 	if unescaped, err := url.QueryUnescape(raw); err == nil {
 		raw = unescaped
 	}
@@ -100,7 +99,7 @@ func extractTagFromURL(u *url.URL) string {
 	return strings.Join(rest[:n], "/")
 }
 
-// ====== updated_at (дата + время)
+// updated_at (дата + время)
 var (
 	reDate = regexp.MustCompile(`\b(\d{1,2}\.\d{1,2}\.\d{2,4})\b`)                     // dd.mm.yyyy
 	reTime = regexp.MustCompile(`\b([01]?\d|2[0-3])[:.]\d{2}(?::\d{2})?\b`)            // HH:MM[:SS]
@@ -140,6 +139,7 @@ func extractUpdatedAtWithTime(root *goquery.Selection) string {
 	}
 
 	var firstTime string
+
 	for _, sel := range candidates {
 		if sel == nil || sel.Length() == 0 {
 			continue
@@ -176,6 +176,7 @@ func extractUpdatedAtWithTime(root *goquery.Selection) string {
 	}
 	return ""
 }
+
 func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson *goquery.Selection) {
 	lessonType := ""
 	switch {
@@ -187,17 +188,24 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 		lessonType = "ЛАБОРАТОРНАЯ"
 	}
 
-	numerator := strings.Contains(strings.ToUpper(lesson.Find(".lesson-prop__num, .num").Text()), "Ч")
+	// 0 - еженедельно, 1 - числитель, 2 - знаменатель
+	var numerator int
+	if lesson.Find(".lesson-prop__num").Length() > 0 {
+		numerator = 1
+	} else if lesson.Find(".lesson-prop__denom").Length() > 0 {
+		numerator = 2
+	}
+
 	name := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-name, .name").Text()))
 	teacher := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-teacher, .teacher").Text()))
 	teacher = strings.Join(strings.Fields(strings.ReplaceAll(teacher, "\n", " ")), " ")
 	room := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-room span, .room, .aud, .cab").Text()))
 	subgroup := strings.TrimSpace(firstNonEmpty(lesson.Find(".schedule-table__lesson-uncertain, .subgroup, .sg").Text()))
 
-	// пустые карточки отбрасываем
 	if name == "" && teacher == "" && room == "" && lessonType == "" {
 		return
 	}
+
 	mu.Lock()
 	group.Schedule = append(group.Schedule, Lesson{
 		Time:      timeSlot,
@@ -212,7 +220,6 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 	mu.Unlock()
 }
 
-// ====== MAIN
 func main() {
 	const parallelism = 20 // число потоков
 	c := colly.NewCollector(
@@ -221,18 +228,20 @@ func main() {
 		colly.MaxDepth(2),
 		colly.Async(true),
 	)
-	c.SetRequestTimeout(05 * time.Second)
+	c.SetRequestTimeout(5 * time.Second)
 	_ = c.Limit(&colly.LimitRule{
 		DomainGlob:  "*sgu.ru*",
 		Parallelism: parallelism,
 	})
+
 	var (
 		mu           sync.Mutex
 		parsedGroups uint64
-		groupByURL   = make(map[string]*GroupDoc) // канонический URL → группа
+		groupByURL   = make(map[string]*GroupDoc) // канонический URL - группа
 		visitedLink  = make(map[string]struct{})  // защита от дублей
 		output       = Output{GeneratedAt: time.Now()}
 	)
+
 	// скорость «групп/мин»
 	stopGroups := startRateLoggerLabeled(&parsedGroups, 10*time.Second, "групп")
 	defer stopGroups()
@@ -242,12 +251,12 @@ func main() {
 		log.Printf("Ошибка %s: %v (HTTP %d)", r.Request.URL, err, r.StatusCode)
 	})
 
-	// ===== 1) /schedule: ссылки на группы /schedule/<slug>/(do|zo|vo)/<code>
+	// /schedule: ссылки на группы /schedule/<slug>/(do|zo|vo)/<code>
 	c.OnHTML("body", func(e *colly.HTMLElement) {
 		if p := e.Request.URL.Path; p != "/schedule" && p != "/schedule/" {
 			return
 		}
-
+		
 		e.DOM.Find("a[href^='/schedule/']").Each(func(_ int, a *goquery.Selection) {
 			href := strings.TrimSpace(a.AttrOr("href", ""))
 			if href == "" {
@@ -289,7 +298,7 @@ func main() {
 			visitedLink[link] = struct{}{}
 
 			g := &GroupDoc{
-				Faculty:   slug, // теперь faculty = СЛАГ
+				Faculty:   slug, // faculty = СЛАГ
 				Group:     groupName,
 				Form:      form,
 				Tag:       tag,
@@ -304,7 +313,7 @@ func main() {
 		})
 	})
 
-	// ===== 2) Страница группы: updated_at и расписание (универсальный проход)
+	// Страница группы: updated_at и расписание
 	c.OnHTML(".schedule-table", func(e *colly.HTMLElement) {
 		urlStr := canonicalize(e.Request.URL.String())
 
@@ -316,7 +325,7 @@ func main() {
 		}
 		mu.Unlock()
 		if group == nil {
-			log.Printf("⚠️  Не нашли группу по URL: %s", urlStr)
+			log.Printf("Не нашли группу по URL: %s", urlStr)
 			return
 		}
 
@@ -346,7 +355,7 @@ func main() {
 			})
 		}
 
-		// Универсальный проход по строкам и колонкам
+		// Проход по строкам и колонкам
 		rowSel, colSel := "", ""
 		switch {
 		case e.DOM.Find(".schedule-table__row").Length() > 0:
@@ -378,7 +387,7 @@ func main() {
 			})
 		})
 
-		atomic.AddUint64(&parsedGroups, 1) // считаем группу ровно один раз
+		atomic.AddUint64(&parsedGroups, 1) // считаем группу один раз
 	})
 
 	// Старт
@@ -403,7 +412,7 @@ func main() {
 	fmt.Printf("Total groups: %d, total lessons: %d\n", len(output.Groups), totalLessons)
 }
 
-// ===== логгер скорости (групп/мин)
+// логгер скорости (групп/мин)
 
 func startRateLoggerLabeled(counter *uint64, interval time.Duration, label string) func() {
 	done := make(chan struct{})

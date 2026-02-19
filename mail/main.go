@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -172,16 +173,51 @@ func mapForm(formSlug string) string {
 	}
 }
 
-// структуры под чтение schedule.json от scrapper.go
+// структуры под чтение schedule.json от scrapper.go.  (Куча хлама, из-за 2 версии скрапера)
+type NumeratorAny struct {
+	Val int
+}
+
+func (n *NumeratorAny) UnmarshalJSON(b []byte) error {
+	var asBool bool
+	if err := json.Unmarshal(b, &asBool); err == nil {
+		if asBool {
+			n.Val = 1
+		} else {
+			n.Val = 2
+		}
+		return nil
+	}
+	var asInt int
+	if err := json.Unmarshal(b, &asInt); err == nil {
+		n.Val = asInt
+		return nil
+	}
+	var asStr string
+	if err := json.Unmarshal(b, &asStr); err == nil {
+		s := strings.ToLower(strings.TrimSpace(asStr))
+		switch s {
+		case "числитель", "num", "ч", "true": //для разных версий парсера, чтобы не было багов нужно учесть все возможные варианты
+			n.Val = 1
+		case "знаменатель", "denom", "з", "false":
+			n.Val = 2
+		default:
+			n.Val = 0
+		}
+		return nil
+	}
+	return fmt.Errorf("invalid numerator")
+}
+
 type scrapedLesson struct {
-	Time      string `json:"time"`
-	Day       string `json:"day"`
-	Type      string `json:"type"`
-	Name      string `json:"name"`
-	Teacher   string `json:"teacher"`
-	Room      string `json:"room"`
-	Subgroup  string `json:"subgroup"`
-	Numerator bool   `json:"numerator"`
+	Time      string       `json:"time"`
+	Day       string       `json:"day"`
+	Type      string       `json:"type"`
+	Name      string       `json:"name"`
+	Teacher   string       `json:"teacher"`
+	Room      string       `json:"room"`
+	Subgroup  string       `json:"subgroup"`
+	Numerator NumeratorAny `json:"numerator"`
 }
 
 type scrapedGroup struct {
@@ -203,14 +239,11 @@ func runScrapeAndUpsert() error {
 	startTime := time.Now()
 	log.Println("Запуск парсера расписаний...")
 
-	// 0) Убедиться, что зависимости скраппера подтянуты
-	_ = runCmd("go", "get", "github.com/PuerkitoBio/goquery")
-	_ = runCmd("go", "get", "github.com/gocolly/colly/v2")
-	_ = runCmd("go", "mod", "tidy")
-
 	// 1) Запустить парсер: go run main.go
+	workDir, _ := os.Getwd()
+	scrapperDir := filepath.Join(workDir, "scrapper")
 	cmd := exec.Command("go", "run", "main.go")
-	cmd.Dir = "/app/scrapper"// Изменить рабочую директорию на директорию со скрапером
+	cmd.Dir = scrapperDir
 	cmd.Env = os.Environ()
 	log.Println("Парсер выполняется...")
 
@@ -254,7 +287,7 @@ func runScrapeAndUpsert() error {
 	}
 
 	// 2) Прочитать schedule.json из директории scrapper
-	data, err := os.ReadFile("../scrapper/schedule.json")
+	data, err := os.ReadFile(filepath.Join(scrapperDir, "schedule.json"))
 	if err != nil {
 		log.Printf("Ошибка чтения schedule.json: %v", err)
 		return err
@@ -295,8 +328,10 @@ func runScrapeAndUpsert() error {
 			day := normalizeDayOfWeek(l.Day)
 			start, end := splitTime(l.Time)
 			mode := "знаменатель"
-			if l.Numerator {
+			if l.Numerator.Val == 1 {
 				mode = "числитель"
+			} else if l.Numerator.Val == 0 {
+				mode = "оба"
 			}
 			subgroup := parseSubgroup(l.Subgroup)
 			s := Schedule{
