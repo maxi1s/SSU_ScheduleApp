@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/gorilla/rpc"
+	jsonrpc "github.com/gorilla/rpc/json"
+
 	_ "github.com/lib/pq"
 )
 
@@ -107,7 +109,6 @@ func createTables() error {
 
 func main() {
 	var err error
-	// Пример строки подключения: "postgres://user:password@localhost:5432/dbname?sslmode=disable"
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://postgres_user:postgres_password@localhost:5432/postgres_db?sslmode=disable"
@@ -125,23 +126,15 @@ func main() {
 		log.Fatalf("db migration failed: %v", err)
 	}
 
-	r := mux.NewRouter()
-
-	// Эндпоинты заготовки
-	r.HandleFunc("/faculties", GetFaculties).Methods("GET")
-	r.HandleFunc("/groups", GetGroups).Methods("GET")
-	r.HandleFunc("/schedule", GetSchedule).Methods("GET")
-	r.HandleFunc("/last_updated", GetLastUpdated).Methods("GET")
-
-	// Роуты в стиле SGU: /faculty/form/group
-	r.HandleFunc("/{faculty}/{form}/{group}", GetScheduleBySGUPath).Methods("GET")
-
+	s := rpc.NewServer()
+	s.RegisterCodec(jsonrpc.NewCodec(), "application/json")
+	s.RegisterCodec(jsonrpc.NewCodec(), "application/json;charset=UTF-8")
+	_ = s.RegisterService(new(API), "")
+	http.Handle("/rpc", s)
 	log.Println("Server started on :8081")
 
-	// Запускаем периодический парсинг в фоне
 	go func() {
 		interval := 1 * time.Hour
-		// первый прогон при старте
 		if err := runScrapeAndUpsert(); err != nil {
 			log.Printf("background scrape error: %v", err)
 		}
@@ -154,7 +147,7 @@ func main() {
 		}
 	}()
 
-	http.ListenAndServe("0.0.0.0:8081", r)
+	http.ListenAndServe("0.0.0.0:8081", nil)
 }
 
 // --- Интеграция с scrapper.go ---
@@ -430,96 +423,7 @@ func parseSubgroup(s string) int {
 	return 0
 }
 
-func GetFaculties(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, name FROM faculties ORDER BY name")
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	var faculties []Faculty
-	for rows.Next() {
-		var f Faculty
-		if err := rows.Scan(&f.ID, &f.Name); err != nil {
-			continue
-		}
-		faculties = append(faculties, f)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(faculties)
-}
-
-func GetGroups(w http.ResponseWriter, r *http.Request) {
-	facultyID := r.URL.Query().Get("faculty_id")
-	eduFormID := r.URL.Query().Get("edu_form_id")
-	if facultyID == "" || eduFormID == "" {
-		http.Error(w, "faculty_id and edu_form_id required", http.StatusBadRequest)
-		return
-	}
-	rows, err := db.Query("SELECT id, name, faculty_id, edu_form_id FROM groups WHERE faculty_id=$1 AND edu_form_id=$2 ORDER BY name", facultyID, eduFormID)
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	var groups []Group
-	for rows.Next() {
-		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.FacultyID, &g.EduFormID); err != nil {
-			continue
-		}
-		groups = append(groups, g)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(groups)
-}
-
-func GetSchedule(w http.ResponseWriter, r *http.Request) {
-	groupID := r.URL.Query().Get("group_id")
-	if groupID == "" {
-		http.Error(w, "group_id required", http.StatusBadRequest)
-		return
-	}
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, groupID)
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	var schedules []Schedule
-	for rows.Next() {
-		var s Schedule
-		if err := rows.Scan(
-			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonNum,
-			&s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
-			&s.Mode, &s.Subgroup,
-		); err != nil {
-			continue
-		}
-		schedules = append(schedules, s)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(schedules)
-}
-
-func GetLastUpdated(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT table_name, last_updated FROM data_updates")
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	updates := map[string]string{}
-	for rows.Next() {
-		var t, d string
-		if err := rows.Scan(&t, &d); err != nil {
-			continue
-		}
-		updates[t] = d
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updates)
-}
+ 
 
 // --- UPSERT-функции для заполнения БД ---
 
@@ -581,29 +485,117 @@ func UpsertEduFormIfNotExistsByName(name string) (int, error) {
 	return id, nil
 }
 
-// Обработчик для URL в стиле SGU: /{faculty}/{form}/{group}
-func GetScheduleBySGUPath(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	facultySlug := vars["faculty"]
-	formSlug := vars["form"]
-	groupName := vars["group"]
+type API struct{}
 
-	// Маппинг формы обучения из URL в БД
-	formName := mapForm(formSlug)
+type EmptyArgs struct{}
+type GroupsArgs struct {
+	FacultyID int `json:"faculty_id"`
+	EduFormID int `json:"edu_form_id"`
+}
+type ScheduleArgs struct {
+	GroupID int `json:"group_id"`
+}
+type SGUPathArgs struct {
+	Faculty string `json:"faculty"`
+	Form    string `json:"form"`
+	Group   string `json:"group"`
+}
 
-	// Найти группу в БД
+func (a *API) GetFaculties(_ *http.Request, _ *EmptyArgs, reply *[]Faculty) error {
+	rows, err := db.Query("SELECT id, name FROM faculties ORDER BY name")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var res []Faculty
+	for rows.Next() {
+		var f Faculty
+		if err := rows.Scan(&f.ID, &f.Name); err != nil {
+			continue
+		}
+		res = append(res, f)
+	}
+	*reply = res
+	return nil
+}
+
+func (a *API) GetGroups(_ *http.Request, args *GroupsArgs, reply *[]Group) error {
+	if args == nil || args.FacultyID == 0 || args.EduFormID == 0 {
+		return fmt.Errorf("faculty_id and edu_form_id required")
+	}
+	rows, err := db.Query("SELECT id, name, faculty_id, edu_form_id FROM groups WHERE faculty_id=$1 AND edu_form_id=$2 ORDER BY name", args.FacultyID, args.EduFormID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var res []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.Name, &g.FacultyID, &g.EduFormID); err != nil {
+			continue
+		}
+		res = append(res, g)
+	}
+	*reply = res
+	return nil
+}
+
+func (a *API) GetSchedule(_ *http.Request, args *ScheduleArgs, reply *[]Schedule) error {
+	if args == nil || args.GroupID == 0 {
+		return fmt.Errorf("group_id required")
+	}
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, args.GroupID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var res []Schedule
+	for rows.Next() {
+		var s Schedule
+		if err := rows.Scan(
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonNum,
+			&s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.Mode, &s.Subgroup,
+		); err != nil {
+			continue
+		}
+		res = append(res, s)
+	}
+	*reply = res
+	return nil
+}
+
+func (a *API) GetLastUpdated(_ *http.Request, _ *EmptyArgs, reply *map[string]string) error {
+	rows, err := db.Query("SELECT table_name, last_updated FROM data_updates")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	res := map[string]string{}
+	for rows.Next() {
+		var t, d string
+		if err := rows.Scan(&t, &d); err != nil {
+			continue
+		}
+		res[t] = d
+	}
+	*reply = res
+	return nil
+}
+
+func (a *API) GetScheduleByPath(_ *http.Request, args *SGUPathArgs, reply *[]Schedule) error {
+	if args == nil || args.Faculty == "" || args.Form == "" || args.Group == "" {
+		return fmt.Errorf("faculty, form and group required")
+	}
+	formName := mapForm(args.Form)
 	var groupID int
 	query := `SELECT g.id FROM groups g
 			  JOIN faculties f ON g.faculty_id = f.id
 			  JOIN edu_forms ef ON g.edu_form_id = ef.id
 			  WHERE f.name = $1 AND ef.name = $2 AND g.name = $3`
-
-	err := db.QueryRow(query, facultySlug, formName, groupName).Scan(&groupID)
+	err := db.QueryRow(query, args.Faculty, formName, args.Group).Scan(&groupID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Группа %s %s %s не найдена", groupName, facultySlug, formName), http.StatusNotFound)
-		return
+		return fmt.Errorf("group not found")
 	}
-
-	// Перенаправить на обычный эндпоинт расписания
-	http.Redirect(w, r, fmt.Sprintf("/schedule?group_id=%d", groupID), http.StatusFound)
+	return a.GetSchedule(nil, &ScheduleArgs{GroupID: groupID}, reply)
 }
