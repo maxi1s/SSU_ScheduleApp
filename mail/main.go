@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,13 +13,35 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
+	"github.com/segmentio/kafka-go"
 )
 
 var db *sql.DB
+var kafkaWriterScrape *kafka.Writer
+var kafkaWriterScrapeError *kafka.Writer
+var kafkaTopicScrape string
+var kafkaTopicScrapeError string
+var kafkaBrokers []string
+var kafkaTopicScrapeCommands string
+
+type scrapeRunState struct {
+	Running        bool      `json:"running"`
+	LastTrigger    string    `json:"last_trigger"` //Кто инициировал запуск скрапинга
+	LastStartedAt  time.Time `json:"last_started_at"`
+	LastFinishedAt time.Time `json:"last_finished_at"`
+	LastDurationMs int64     `json:"last_duration_ms"`
+	LastError      string    `json:"last_error"`
+}
+
+var scrapeMu sync.Mutex
+var scrapeState scrapeRunState
+var scrapePending bool
+var scrapePendingTrigger string
 
 // --- Модели данных
 
@@ -125,6 +148,15 @@ func main() {
 		log.Fatalf("db migration failed: %v", err)
 	}
 
+	kafkaWriterScrape, kafkaWriterScrapeError, kafkaTopicScrape, kafkaTopicScrapeError = initKafkaFromEnv()
+	if kafkaWriterScrape != nil {
+		defer kafkaWriterScrape.Close()
+	}
+	if kafkaWriterScrapeError != nil {
+		defer kafkaWriterScrapeError.Close()
+	}
+	startKafkaScrapeCommandConsumer()
+
 	r := mux.NewRouter()
 
 	// Эндпоинты заготовки
@@ -132,6 +164,8 @@ func main() {
 	r.HandleFunc("/groups", GetGroups).Methods("GET")
 	r.HandleFunc("/schedule", GetSchedule).Methods("GET")
 	r.HandleFunc("/last_updated", GetLastUpdated).Methods("GET")
+	r.HandleFunc("/scrape/run", RunScrapeNow).Methods("POST")
+	r.HandleFunc("/scrape/status", GetScrapeStatus).Methods("GET")
 
 	// Роуты в стиле SGU: /faculty/form/group
 	r.HandleFunc("/{faculty}/{form}/{group}", GetScheduleBySGUPath).Methods("GET")
@@ -142,19 +176,209 @@ func main() {
 	go func() {
 		interval := 1 * time.Hour
 		// первый прогон при старте
-		if err := runScrapeAndUpsert(); err != nil {
-			log.Printf("background scrape error: %v", err)
-		}
+		_ = startScrapeAsync("startup")
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := runScrapeAndUpsert(); err != nil {
-				log.Printf("background scrape error: %v", err)
-			}
+			_ = startScrapeAsync("interval")
 		}
 	}()
 
 	http.ListenAndServe("0.0.0.0:8081", r)
+}
+
+func initKafkaFromEnv() (*kafka.Writer, *kafka.Writer, string, string) {
+	brokersRaw := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
+	if brokersRaw == "" {
+		return nil, nil, "", ""
+	}
+	topic := strings.TrimSpace(os.Getenv("KAFKA_TOPIC_SCRAPE"))
+	if topic == "" {
+		topic = "schedule.scrape.finished"
+	}
+	topicErr := strings.TrimSpace(os.Getenv("KAFKA_TOPIC_SCRAPE_ERROR"))
+	if topicErr == "" {
+		topicErr = "schedule.scrape.failed"
+	}
+
+	var brokers []string
+	for _, part := range strings.Split(brokersRaw, ",") {
+		b := strings.TrimSpace(part)
+		if b != "" {
+			brokers = append(brokers, b)
+		}
+	}
+	if len(brokers) == 0 {
+		return nil, nil, "", ""
+	}
+	kafkaBrokers = brokers
+
+	ensureKafkaTopic(brokers[0], topic)
+	ensureKafkaTopic(brokers[0], topicErr)
+	kafkaTopicScrapeCommands = strings.TrimSpace(os.Getenv("KAFKA_TOPIC_SCRAPE_COMMANDS"))
+	if kafkaTopicScrapeCommands == "" {
+		kafkaTopicScrapeCommands = "schedule.scrape.commands"
+	}
+	ensureKafkaTopic(brokers[0], kafkaTopicScrapeCommands)
+
+	wScrape := &kafka.Writer{
+		Addr:     kafka.TCP(brokers...),
+		Topic:    topic,
+		Balancer: &kafka.LeastBytes{},
+	}
+	wErr := &kafka.Writer{
+		Addr:     kafka.TCP(brokers...),
+		Topic:    topicErr,
+		Balancer: &kafka.LeastBytes{},
+	}
+
+	return wScrape, wErr, topic, topicErr
+}
+
+func ensureKafkaTopic(broker, topic string) {
+	if strings.TrimSpace(broker) == "" || strings.TrimSpace(topic) == "" {
+		return
+	}
+
+	for attempt := 1; attempt <= 10; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		dialer := &kafka.Dialer{Timeout: 5 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", broker)
+		cancel()
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		err = conn.CreateTopics(kafka.TopicConfig{
+			Topic:             topic,
+			NumPartitions:     1,
+			ReplicationFactor: 1,
+		})
+		_ = conn.Close()
+
+		if err == nil {
+			return
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func startScrapeAsync(trigger string) bool {
+	started, _ := requestScrape(trigger)
+	return started
+}
+
+func requestScrape(trigger string) (bool, bool) {
+	scrapeMu.Lock()
+	if scrapeState.Running {
+		scrapePending = true
+		scrapePendingTrigger = trigger
+		scrapeMu.Unlock()
+		return false, true
+	}
+	scrapeState.Running = true
+	scrapeState.LastTrigger = trigger
+	startedAt := time.Now()
+	scrapeState.LastStartedAt = startedAt
+	scrapeState.LastError = ""
+	scrapeMu.Unlock()
+
+	startScrapeWorker(trigger, startedAt)
+	return true, false
+}
+
+func startScrapeWorker(trigger string, startedAt time.Time) {
+	go func(startedAt time.Time) {
+		err := runScrapeAndUpsert()
+		finishedAt := time.Now()
+
+		scrapeMu.Lock()
+		scrapeState.Running = false
+		scrapeState.LastFinishedAt = finishedAt
+		scrapeState.LastDurationMs = finishedAt.Sub(startedAt).Milliseconds()
+		if err != nil {
+			scrapeState.LastError = err.Error()
+		}
+		shouldStartNext := scrapePending
+		nextTrigger := scrapePendingTrigger
+		scrapePending = false
+		scrapePendingTrigger = ""
+		scrapeMu.Unlock()
+
+		if shouldStartNext {
+			_, _ = requestScrape(nextTrigger)
+		}
+	}(startedAt)
+}
+
+func RunScrapeNow(w http.ResponseWriter, r *http.Request) {
+	started, queued := requestScrape("manual")
+	if started || queued {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	http.Error(w, "scrape not started", http.StatusInternalServerError)
+}
+
+func GetScrapeStatus(w http.ResponseWriter, r *http.Request) {
+	scrapeMu.Lock()
+	st := scrapeState
+	scrapeMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
+}
+
+type scrapeCommand struct {
+	Action string `json:"action"`
+}
+
+func startKafkaScrapeCommandConsumer() {
+	if len(kafkaBrokers) == 0 || strings.TrimSpace(kafkaTopicScrapeCommands) == "" {
+		return
+	}
+
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     kafkaBrokers,
+		Topic:       kafkaTopicScrapeCommands,
+		Partition:   0,
+		MinBytes:    1,
+		MaxBytes:    10e6,
+		StartOffset: kafka.LastOffset,
+	})
+
+	go func() {
+		log.Printf("kafka command consumer started: topic=%s", kafkaTopicScrapeCommands)
+		for {
+			msg, err := r.ReadMessage(context.Background())
+			if err != nil {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			action := strings.TrimSpace(string(msg.Value))
+			var cmd scrapeCommand
+			if json.Unmarshal(msg.Value, &cmd) == nil {
+				if strings.TrimSpace(cmd.Action) != "" {
+					action = strings.TrimSpace(cmd.Action)
+				}
+			}
+			action = strings.ToLower(action)
+
+			if action == "run" || action == "scrape" || action == "start" {
+				started, queued := requestScrape("kafka")
+				if started {
+					log.Printf("scrape triggered by kafka: topic=%s", kafkaTopicScrapeCommands)
+				} else if queued {
+					log.Printf("scrape queued by kafka: topic=%s", kafkaTopicScrapeCommands)
+				}
+			}
+		}
+	}()
 }
 
 // --- Интеграция с scrapper.go ---
@@ -235,6 +459,97 @@ type scrapedOutput struct {
 	Groups      []*scrapedGroup `json:"groups"`
 }
 
+type scrapeFinishedEvent struct {
+	Type 		 string    `json:"type"`
+	GeneratedAt  time.Time `json:"generated_at"`
+	PublishedAt  time.Time `json:"published_at"`
+	GroupsCount  int       `json:"groups_count"`
+	TotalLessons int       `json:"total_lessons"`
+	DurationMs   int64     `json:"duration_ms"`
+}
+
+type scrapeFailedEvent struct {
+	Type   	    string    `json:"type"`
+	Stage       string    `json:"stage"`
+	Error       string    `json:"error"`
+	Details     string    `json:"details"`
+	PublishedAt time.Time `json:"published_at"`
+	DurationMs  int64     `json:"duration_ms"`
+}
+
+func publishScrapeFinished(generatedAt time.Time, groupsCount, totalLessons int, duration time.Duration) {
+	if kafkaWriterScrape == nil {
+		return
+	}
+
+	ev := scrapeFinishedEvent{
+		Type:         "schedule.scrape.finished",
+		GeneratedAt:  generatedAt,
+		PublishedAt:  time.Now(),
+		GroupsCount:  groupsCount,
+		TotalLessons: totalLessons,
+		DurationMs:   duration.Milliseconds(),
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		log.Printf("kafka marshal error: %v", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := kafkaWriterScrape.WriteMessages(ctx, kafka.Message{Key: []byte("scrape"), Value: b}); err != nil {
+		log.Printf("kafka publish error: %v", err)
+	}
+}
+
+func publishScrapeFailed(stage string, scrapeErr error, details string, duration time.Duration) {
+	if kafkaWriterScrapeError == nil {
+		return
+	}
+
+	ev := scrapeFailedEvent{
+		Type:        "schedule.scrape.failed",
+		Stage:       strings.TrimSpace(stage),
+		Error:       errorString(scrapeErr),
+		Details:     truncateString(details, 4000),
+		PublishedAt: time.Now(),
+		DurationMs:  duration.Milliseconds(),
+	}
+
+	b, err := json.Marshal(ev)
+	if err != nil {
+		log.Printf("kafka marshal error: %v", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := kafkaWriterScrapeError.WriteMessages(ctx, kafka.Message{Key: []byte("scrape_error"), Value: b}); err != nil {
+		log.Printf("kafka publish error: %v", err)
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func truncateString(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
+}
+
 func runScrapeAndUpsert() error {
 	startTime := time.Now()
 	log.Println("Запуск парсера расписаний...")
@@ -250,15 +565,18 @@ func runScrapeAndUpsert() error {
 	// Создаем пайп для получения вывода парсера
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		publishScrapeFailed("scrapper_stdout_pipe", err, "", time.Since(startTime))
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		publishScrapeFailed("scrapper_stderr_pipe", err, "", time.Since(startTime))
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("ERROR Ошибка запуска парсера: %v", err)
+		publishScrapeFailed("scrapper_start", err, "", time.Since(startTime))
 		return err
 	}
 
@@ -283,6 +601,7 @@ func runScrapeAndUpsert() error {
 
 	if err != nil {
 		log.Printf("Ошибка выполнения парсера: %s", string(stderrOut))
+		publishScrapeFailed("scrapper_wait", err, string(stderrOut), time.Since(startTime))
 		return err
 	}
 
@@ -290,17 +609,29 @@ func runScrapeAndUpsert() error {
 	data, err := os.ReadFile(filepath.Join(scrapperDir, "schedule.json"))
 	if err != nil {
 		log.Printf("Ошибка чтения schedule.json: %v", err)
+		publishScrapeFailed("read_schedule_json", err, "", time.Since(startTime))
 		return err
 	}
 	var outJSON scrapedOutput
 	if err := json.Unmarshal(data, &outJSON); err != nil {
 		log.Printf("Ошибка парсинга JSON: %v", err)
+		publishScrapeFailed("parse_schedule_json", err, "", time.Since(startTime))
 		return err
 	}
+
+	groupsCount := len(outJSON.Groups)
+	totalLessons := 0
+	for _, g := range outJSON.Groups {
+		if g != nil {
+			totalLessons += len(g.Schedule)
+		}
+	}
+	publishScrapeFinished(outJSON.GeneratedAt, groupsCount, totalLessons, time.Since(startTime))
 
 	// 3) Маппинг форм обучения do/zo/vo (теперь используется глобальная функция)
 
 	// 4) Вставка в БД
+	var firstUpsertErr error
 	for _, g := range outJSON.Groups {
 		if g == nil {
 			continue
@@ -308,11 +639,17 @@ func runScrapeAndUpsert() error {
 		// faculty: используем slug как имя
 		if err := UpsertFaculty(g.Faculty); err != nil {
 			log.Printf("upsert faculty error: %v", err)
+			if firstUpsertErr == nil {
+				firstUpsertErr = err
+			}
 		}
 		// edu form id
 		eduFormName := mapForm(g.Form)
 		if err := UpsertEduForm(eduFormName); err != nil {
 			log.Printf("upsert edu_form error: %v", err)
+			if firstUpsertErr == nil {
+				firstUpsertErr = err
+			}
 		}
 		// получить id факультета и формы для связи группы
 		var facultyID, eduFormID, groupID int
@@ -320,6 +657,9 @@ func runScrapeAndUpsert() error {
 		_ = db.QueryRow("SELECT id FROM edu_forms WHERE name=$1", eduFormName).Scan(&eduFormID)
 		if err := UpsertGroup(g.Group, facultyID, eduFormID); err != nil {
 			log.Printf("upsert group error: %v", err)
+			if firstUpsertErr == nil {
+				firstUpsertErr = err
+			}
 		}
 		_ = db.QueryRow("SELECT id FROM groups WHERE name=$1 AND faculty_id=$2 AND edu_form_id=$3", g.Group, facultyID, eduFormID).Scan(&groupID)
 
@@ -348,19 +688,15 @@ func runScrapeAndUpsert() error {
 			}
 			if err := UpsertSchedule(s); err != nil {
 				log.Printf("upsert schedule error: %v", err)
+				if firstUpsertErr == nil {
+					firstUpsertErr = err
+				}
 			}
 		}
 	}
 
 	// Логирование результатов
 	duration := time.Since(startTime)
-	groupsCount := len(outJSON.Groups)
-	totalLessons := 0
-	for _, g := range outJSON.Groups {
-		if g != nil {
-			totalLessons += len(g.Schedule)
-		}
-	}
 
 	speed := float64(groupsCount) / duration.Minutes()
 	if speed < 1 {
@@ -372,6 +708,10 @@ func runScrapeAndUpsert() error {
 	log.Printf("    Обработано групп: %d", groupsCount)
 	log.Printf("    Всего занятий: %d", totalLessons)
 	log.Printf("    Средняя скорость: %.2f групп/мин", speed)
+
+	if firstUpsertErr != nil {
+		publishScrapeFailed("db_upsert", firstUpsertErr, "", duration)
+	}
 
 	return nil
 }
