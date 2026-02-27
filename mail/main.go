@@ -163,19 +163,6 @@ func main() {
 	}
 	startKafkaScrapeCommandConsumer()
 
-	r := mux.NewRouter()
-
-	// Эндпоинты заготовки
-	r.HandleFunc("/faculties", GetFaculties).Methods("GET")
-	r.HandleFunc("/groups", GetGroups).Methods("GET")
-	r.HandleFunc("/schedule", GetSchedule).Methods("GET")
-	r.HandleFunc("/last_updated", GetLastUpdated).Methods("GET")
-	r.HandleFunc("/scrape/run", RunScrapeNow).Methods("POST")
-	r.HandleFunc("/scrape/status", GetScrapeStatus).Methods("GET")
-
-	// Роуты в стиле SGU: /faculty/form/group
-	r.HandleFunc("/{faculty}/{form}/{group}", GetScheduleBySGUPath).Methods("GET")
-
 	log.Println("Server started on :8081")
 
 	go func() {
@@ -321,24 +308,6 @@ func startScrapeWorker(trigger string, startedAt time.Time) {
 			_, _ = requestScrape(nextTrigger)
 		}
 	}(startedAt)
-}
-
-func RunScrapeNow(w http.ResponseWriter, r *http.Request) {
-	started, queued := requestScrape("manual")
-	if started || queued {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	http.Error(w, "scrape not started", http.StatusInternalServerError)
-}
-
-func GetScrapeStatus(w http.ResponseWriter, r *http.Request) {
-	scrapeMu.Lock()
-	st := scrapeState
-	scrapeMu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(st)
 }
 
 type scrapeCommand struct {
@@ -953,4 +922,19 @@ func (a *API) GetScheduleByPath(_ *http.Request, args *SGUPathArgs, reply *[]Sch
 		return fmt.Errorf("group not found")
 	}
 	return a.GetSchedule(nil, &ScheduleArgs{GroupID: groupID}, reply)
+}
+
+func (a *API) RunScrape(_ *http.Request, _ *EmptyArgs, reply *bool) error {
+	started, queued := requestScrape("rpc")
+	*reply = started || queued
+	return nil
+}
+
+func (a *API) GetScrapeStatus(_ *http.Request, _ *EmptyArgs, reply *scrapeRunState) error {
+	scrapeMu.Lock()
+	st := scrapeState
+	scrapeMu.Unlock()
+
+	*reply = st
+	return nil
 }
