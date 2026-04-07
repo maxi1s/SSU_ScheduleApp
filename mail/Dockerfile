@@ -24,5 +24,6 @@ RUN mkdir -p /app/data
 
 # Порт для API
 EXPOSE 8081
+EXPOSE 8082
 
 CMD ["./mail"]

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,11 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/rpc"
-	jsonrpc "github.com/gorilla/rpc/json"
-
+	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
 	"github.com/segmentio/kafka-go"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+
+	pb "mail/proto"
 )
 
 var db *sql.DB
@@ -33,7 +36,7 @@ var kafkaTopicScrapeCommands string
 
 type scrapeRunState struct {
 	Running        bool      `json:"running"`
-	LastTrigger    string    `json:"last_trigger"` //Кто инициировал запуск скрапинга
+	LastTrigger    string    `json:"last_trigger"`
 	LastStartedAt  time.Time `json:"last_started_at"`
 	LastFinishedAt time.Time `json:"last_finished_at"`
 	LastDurationMs int64     `json:"last_duration_ms"`
@@ -44,8 +47,6 @@ var scrapeMu sync.Mutex
 var scrapeState scrapeRunState
 var scrapePending bool
 var scrapePendingTrigger string
-
-// --- Модели данных
 
 type Faculty struct {
 	ID   int    `json:"id"`
@@ -74,9 +75,8 @@ type Schedule struct {
 	Room      string `json:"room"`
 	StartTime string `json:"start_time"`
 	EndTime   string `json:"end_time"`
-	// Mode: "числитель", "знаменатель" или "оба"
-	Mode     string `json:"mode"`
-	Subgroup int    `json:"subgroup"`
+	Mode      string `json:"mode"`
+	Subgroup  int    `json:"subgroup"`
 }
 
 type DataUpdate struct {
@@ -84,7 +84,7 @@ type DataUpdate struct {
 	LastUpdated string `json:"last_updated"`
 }
 
-// Создать таблицы при старте
+// Создает таблицы в базе данных
 func createTables() error {
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS faculties (
@@ -149,11 +149,18 @@ func main() {
 		log.Fatalf("db migration failed: %v", err)
 	}
 
-	s := rpc.NewServer()
-	s.RegisterCodec(jsonrpc.NewCodec(), "application/json")
-	s.RegisterCodec(jsonrpc.NewCodec(), "application/json;charset=UTF-8")
-	_ = s.RegisterService(new(API), "")
-	http.Handle("/rpc", s)
+	r := mux.NewRouter()
+	api := r.PathPrefix("/api").Subrouter()
+	api.HandleFunc("/faculties", getFacultiesHandler).Methods("GET")
+	api.HandleFunc("/groups", getGroupsHandler).Methods("GET")
+	api.HandleFunc("/schedule", getScheduleHandler).Methods("GET")
+	api.HandleFunc("/last_updated", getLastUpdatedHandler).Methods("GET")
+	api.HandleFunc("/schedule/path", getScheduleByPathHandler).Methods("GET")
+	api.HandleFunc("/scrape/run", runScrapeHandler).Methods("POST")
+	api.HandleFunc("/scrape/status", getScrapeStatusHandler).Methods("GET")
+
+	http.Handle("/", r)
+
 	kafkaWriterScrape, kafkaWriterScrapeError, kafkaTopicScrape, kafkaTopicScrapeError = initKafkaFromEnv()
 	if kafkaWriterScrape != nil {
 		defer kafkaWriterScrape.Close()
@@ -163,14 +170,28 @@ func main() {
 	}
 	startKafkaScrapeCommandConsumer()
 
-	log.Println("Server started on :8081")
+	log.Println("Server started on :8081 (REST)")
+
+	go func() {
+		lis, err := net.Listen("tcp", ":8082")
+		if err != nil {
+			log.Printf("failed to listen for gRPC: %v", err)
+			return
+		}
+		gs := grpc.NewServer()
+		pb.RegisterScheduleServiceServer(gs, &grpcServer{})
+		reflection.Register(gs)
+		log.Println("gRPC Server started on :8082")
+		if err := gs.Serve(lis); err != nil {
+			log.Printf("failed to serve gRPC: %v", err)
+		}
+	}()
 
 	go func() {
 		interval := 1 * time.Hour
 		if err := runScrapeAndUpsert(); err != nil {
 			log.Printf("background scrape error: %v", err)
 		}
-		// первый прогон при старте
 		_ = startScrapeAsync("startup")
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -182,6 +203,7 @@ func main() {
 	http.ListenAndServe("0.0.0.0:8081", nil)
 }
 
+// Инициализирует Kafka из переменных окружения
 func initKafkaFromEnv() (*kafka.Writer, *kafka.Writer, string, string) {
 	brokersRaw := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
 	if brokersRaw == "" {
@@ -230,6 +252,7 @@ func initKafkaFromEnv() (*kafka.Writer, *kafka.Writer, string, string) {
 	return wScrape, wErr, topic, topicErr
 }
 
+// Проверяет наличие топика в Kafka
 func ensureKafkaTopic(broker, topic string) {
 	if strings.TrimSpace(broker) == "" || strings.TrimSpace(topic) == "" {
 		return
@@ -262,11 +285,13 @@ func ensureKafkaTopic(broker, topic string) {
 	}
 }
 
+// Запускает скрапинг асинхронно
 func startScrapeAsync(trigger string) bool {
 	started, _ := requestScrape(trigger)
 	return started
 }
 
+// Обрабатывает запрос на запуск скрапинга
 func requestScrape(trigger string) (bool, bool) {
 	scrapeMu.Lock()
 	if scrapeState.Running {
@@ -286,6 +311,7 @@ func requestScrape(trigger string) (bool, bool) {
 	return true, false
 }
 
+// Воркер для запуска процесса скрапинга
 func startScrapeWorker(trigger string, startedAt time.Time) {
 	go func(startedAt time.Time) {
 		err := runScrapeAndUpsert()
@@ -314,6 +340,7 @@ type scrapeCommand struct {
 	Action string `json:"action"`
 }
 
+// Потребляет команды из Kafka
 func startKafkaScrapeCommandConsumer() {
 	if len(kafkaBrokers) == 0 || strings.TrimSpace(kafkaTopicScrapeCommands) == "" {
 		return
@@ -358,9 +385,7 @@ func startKafkaScrapeCommandConsumer() {
 	}()
 }
 
-// --- Интеграция с scrapper.go ---
-
-// Маппинг форм обучения do/zo/vo из URL в БД
+// Маппинг форм обучения
 func mapForm(formSlug string) string {
 	switch formSlug {
 	case "do":
@@ -374,11 +399,11 @@ func mapForm(formSlug string) string {
 	}
 }
 
-// структуры под чтение schedule.json от scrapper.go.  (Куча хлама, из-за 2 версии скрапера)
 type NumeratorAny struct {
 	Val int
 }
 
+// Десериализация нумератора
 func (n *NumeratorAny) UnmarshalJSON(b []byte) error {
 	var asBool bool
 	if err := json.Unmarshal(b, &asBool); err == nil {
@@ -398,7 +423,7 @@ func (n *NumeratorAny) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &asStr); err == nil {
 		s := strings.ToLower(strings.TrimSpace(asStr))
 		switch s {
-		case "числитель", "num", "ч", "true": //для разных версий парсера, чтобы не было багов нужно учесть все возможные варианты
+		case "числитель", "num", "ч", "true":
 			n.Val = 1
 		case "знаменатель", "denom", "з", "false":
 			n.Val = 2
@@ -454,6 +479,7 @@ type scrapeFailedEvent struct {
 	DurationMs  int64     `json:"duration_ms"`
 }
 
+// Публикует событие завершения скрапинга в Kafka
 func publishScrapeFinished(generatedAt time.Time, groupsCount, totalLessons int, duration time.Duration) {
 	if kafkaWriterScrape == nil {
 		return
@@ -481,6 +507,7 @@ func publishScrapeFinished(generatedAt time.Time, groupsCount, totalLessons int,
 	}
 }
 
+// Публикует событие ошибки скрапинга в Kafka
 func publishScrapeFailed(stage string, scrapeErr error, details string, duration time.Duration) {
 	if kafkaWriterScrapeError == nil {
 		return
@@ -509,6 +536,7 @@ func publishScrapeFailed(stage string, scrapeErr error, details string, duration
 	}
 }
 
+// Возвращает строку ошибки
 func errorString(err error) string {
 	if err == nil {
 		return ""
@@ -516,6 +544,7 @@ func errorString(err error) string {
 	return err.Error()
 }
 
+// Обрезает строку до максимальной длины
 func truncateString(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if max <= 0 {
@@ -527,11 +556,11 @@ func truncateString(s string, max int) string {
 	return s[:max]
 }
 
+// Основной процесс скрапинга и обновления БД
 func runScrapeAndUpsert() error {
 	startTime := time.Now()
 	log.Println("Запуск парсера расписаний...")
 
-	// 1) Запустить парсер: go run main.go
 	workDir, _ := os.Getwd()
 	scrapperDir := filepath.Join(workDir, "scrapper")
 	cmd := exec.Command("go", "run", "main.go")
@@ -539,7 +568,6 @@ func runScrapeAndUpsert() error {
 	cmd.Env = os.Environ()
 	log.Println("Парсер выполняется...")
 
-	// Создаем пайп для получения вывода парсера
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		publishScrapeFailed("scrapper_stdout_pipe", err, "", time.Since(startTime))
@@ -557,7 +585,6 @@ func runScrapeAndUpsert() error {
 		return err
 	}
 
-	// Логируем вывод парсера
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
@@ -582,7 +609,6 @@ func runScrapeAndUpsert() error {
 		return err
 	}
 
-	// 2) Прочитать schedule.json из директории scrapper
 	data, err := os.ReadFile(filepath.Join(scrapperDir, "schedule.json"))
 	if err != nil {
 		log.Printf("Ошибка чтения schedule.json: %v", err)
@@ -605,22 +631,17 @@ func runScrapeAndUpsert() error {
 	}
 	publishScrapeFinished(outJSON.GeneratedAt, groupsCount, totalLessons, time.Since(startTime))
 
-	// 3) Маппинг форм обучения do/zo/vo (теперь используется глобальная функция)
-
-	// 4) Вставка в БД
 	var firstUpsertErr error
 	for _, g := range outJSON.Groups {
 		if g == nil {
 			continue
 		}
-		// faculty: используем slug как имя
 		if err := UpsertFaculty(g.Faculty); err != nil {
 			log.Printf("upsert faculty error: %v", err)
 			if firstUpsertErr == nil {
 				firstUpsertErr = err
 			}
 		}
-		// edu form id
 		eduFormName := mapForm(g.Form)
 		if err := UpsertEduForm(eduFormName); err != nil {
 			log.Printf("upsert edu_form error: %v", err)
@@ -628,7 +649,6 @@ func runScrapeAndUpsert() error {
 				firstUpsertErr = err
 			}
 		}
-		// получить id факультета и формы для связи группы
 		var facultyID, eduFormID, groupID int
 		_ = db.QueryRow("SELECT id FROM faculties WHERE name=$1", g.Faculty).Scan(&facultyID)
 		_ = db.QueryRow("SELECT id FROM edu_forms WHERE name=$1", eduFormName).Scan(&eduFormID)
@@ -640,7 +660,6 @@ func runScrapeAndUpsert() error {
 		}
 		_ = db.QueryRow("SELECT id FROM groups WHERE name=$1 AND faculty_id=$2 AND edu_form_id=$3", g.Group, facultyID, eduFormID).Scan(&groupID)
 
-		// расписание
 		for _, l := range g.Schedule {
 			day := normalizeDayOfWeek(l.Day)
 			start, end := splitTime(l.Time)
@@ -672,9 +691,7 @@ func runScrapeAndUpsert() error {
 		}
 	}
 
-	// Логирование результатов
 	duration := time.Since(startTime)
-
 	speed := float64(groupsCount) / duration.Minutes()
 	if speed < 1 {
 		speed = float64(groupsCount) / (duration.Seconds() / 60)
@@ -693,6 +710,7 @@ func runScrapeAndUpsert() error {
 	return nil
 }
 
+// Выполняет команду в системе
 func runCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Env = os.Environ()
@@ -703,6 +721,7 @@ func runCmd(name string, args ...string) error {
 	return err
 }
 
+// Нормализует день недели
 func normalizeDayOfWeek(day string) int {
 	d := strings.ToLower(strings.TrimSpace(day))
 	switch d {
@@ -725,6 +744,7 @@ func normalizeDayOfWeek(day string) int {
 	}
 }
 
+// Разделяет время на начало и конец
 func splitTime(ts string) (string, string) {
 	parts := strings.Split(ts, "-")
 	if len(parts) >= 2 {
@@ -733,6 +753,7 @@ func splitTime(ts string) (string, string) {
 	return "", ""
 }
 
+// Парсит номер подгруппы
 func parseSubgroup(s string) int {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -747,10 +768,7 @@ func parseSubgroup(s string) int {
 	return 0
 }
 
- 
-
-// --- UPSERT-функции для заполнения БД ---
-
+// Добавляет факультет в базу
 func UpsertFaculty(name string) error {
 	_, err := db.Exec(`INSERT INTO faculties (name) VALUES ($1)
 		ON CONFLICT (name) DO NOTHING`, name)
@@ -760,6 +778,7 @@ func UpsertFaculty(name string) error {
 	return err
 }
 
+// Добавляет форму обучения в базу
 func UpsertEduForm(name string) error {
 	_, err := db.Exec(`INSERT INTO edu_forms (name) VALUES ($1)
 		ON CONFLICT (name) DO NOTHING`, name)
@@ -769,6 +788,7 @@ func UpsertEduForm(name string) error {
 	return err
 }
 
+// Добавляет группу в базу
 func UpsertGroup(name string, facultyID, eduFormID int) error {
 	_, err := db.Exec(`INSERT INTO groups (name, faculty_id, edu_form_id) VALUES ($1, $2, $3)
 		ON CONFLICT (name, faculty_id, edu_form_id) DO NOTHING`, name, facultyID, eduFormID)
@@ -778,6 +798,7 @@ func UpsertGroup(name string, facultyID, eduFormID int) error {
 	return err
 }
 
+// Добавляет расписание в базу
 func UpsertSchedule(s Schedule) error {
 	_, err := db.Exec(`INSERT INTO schedules (
 		group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup) VALUES
@@ -792,11 +813,12 @@ func UpsertSchedule(s Schedule) error {
 	return err
 }
 
+// Обновляет дату последнего изменения таблицы
 func updateLastUpdated(table string) {
 	_, _ = db.Exec(`INSERT INTO data_updates (table_name, last_updated) VALUES ($1, NOW()) ON CONFLICT (table_name) DO UPDATE SET last_updated=EXCLUDED.last_updated WHERE data_updates.last_updated < EXCLUDED.last_updated`, table)
 }
 
-// Получить id формы обучения по имени, создать если надо
+// Получает id формы обучения или создает новую
 func UpsertEduFormIfNotExistsByName(name string) (int, error) {
 	var id int
 	err := db.QueryRow("SELECT id FROM edu_forms WHERE name = $1", name).Scan(&id)
@@ -809,26 +831,12 @@ func UpsertEduFormIfNotExistsByName(name string) (int, error) {
 	return id, nil
 }
 
-type API struct{}
-
-type EmptyArgs struct{}
-type GroupsArgs struct {
-	FacultyID int `json:"faculty_id"`
-	EduFormID int `json:"edu_form_id"`
-}
-type ScheduleArgs struct {
-	GroupID int `json:"group_id"`
-}
-type SGUPathArgs struct {
-	Faculty string `json:"faculty"`
-	Form    string `json:"form"`
-	Group   string `json:"group"`
-}
-
-func (a *API) GetFaculties(_ *http.Request, _ *EmptyArgs, reply *[]Faculty) error {
+// Возвращает список факультетов
+func getFacultiesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query("SELECT id, name FROM faculties ORDER BY name")
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	defer rows.Close()
 	var res []Faculty
@@ -839,17 +847,22 @@ func (a *API) GetFaculties(_ *http.Request, _ *EmptyArgs, reply *[]Faculty) erro
 		}
 		res = append(res, f)
 	}
-	*reply = res
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) GetGroups(_ *http.Request, args *GroupsArgs, reply *[]Group) error {
-	if args == nil || args.FacultyID == 0 || args.EduFormID == 0 {
-		return fmt.Errorf("faculty_id and edu_form_id required")
+// Возвращает список групп по факультету и форме обучения
+func getGroupsHandler(w http.ResponseWriter, r *http.Request) {
+	fID := r.URL.Query().Get("faculty_id")
+	eID := r.URL.Query().Get("edu_form_id")
+	if fID == "" || eID == "" {
+		http.Error(w, "faculty_id and edu_form_id required", http.StatusBadRequest)
+		return
 	}
-	rows, err := db.Query("SELECT id, name, faculty_id, edu_form_id FROM groups WHERE faculty_id=$1 AND edu_form_id=$2 ORDER BY name", args.FacultyID, args.EduFormID)
+	rows, err := db.Query("SELECT id, name, faculty_id, edu_form_id FROM groups WHERE faculty_id=$1 AND edu_form_id=$2 ORDER BY name", fID, eID)
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	defer rows.Close()
 	var res []Group
@@ -860,17 +873,21 @@ func (a *API) GetGroups(_ *http.Request, args *GroupsArgs, reply *[]Group) error
 		}
 		res = append(res, g)
 	}
-	*reply = res
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) GetSchedule(_ *http.Request, args *ScheduleArgs, reply *[]Schedule) error {
-	if args == nil || args.GroupID == 0 {
-		return fmt.Errorf("group_id required")
+// Возвращает расписание группы
+func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
+	gID := r.URL.Query().Get("group_id")
+	if gID == "" {
+		http.Error(w, "group_id required", http.StatusBadRequest)
+		return
 	}
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, args.GroupID)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, gID)
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	defer rows.Close()
 	var res []Schedule
@@ -885,14 +902,16 @@ func (a *API) GetSchedule(_ *http.Request, args *ScheduleArgs, reply *[]Schedule
 		}
 		res = append(res, s)
 	}
-	*reply = res
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) GetLastUpdated(_ *http.Request, _ *EmptyArgs, reply *map[string]string) error {
+// Возвращает даты последнего обновления таблиц
+func getLastUpdatedHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query("SELECT table_name, last_updated FROM data_updates")
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	defer rows.Close()
 	res := map[string]string{}
@@ -903,38 +922,66 @@ func (a *API) GetLastUpdated(_ *http.Request, _ *EmptyArgs, reply *map[string]st
 		}
 		res[t] = d
 	}
-	*reply = res
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) GetScheduleByPath(_ *http.Request, args *SGUPathArgs, reply *[]Schedule) error {
-	if args == nil || args.Faculty == "" || args.Form == "" || args.Group == "" {
-		return fmt.Errorf("faculty, form and group required")
+// Возвращает расписание по текстовому пути (факультет, форма, группа)
+func getScheduleByPathHandler(w http.ResponseWriter, r *http.Request) {
+	fName := r.URL.Query().Get("faculty")
+	form := r.URL.Query().Get("form")
+	gName := r.URL.Query().Get("group")
+	if fName == "" || form == "" || gName == "" {
+		http.Error(w, "faculty, form and group required", http.StatusBadRequest)
+		return
 	}
-	formName := mapForm(args.Form)
+	formName := mapForm(form)
 	var groupID int
 	query := `SELECT g.id FROM groups g
 			  JOIN faculties f ON g.faculty_id = f.id
 			  JOIN edu_forms ef ON g.edu_form_id = ef.id
 			  WHERE f.name = $1 AND ef.name = $2 AND g.name = $3`
-	err := db.QueryRow(query, args.Faculty, formName, args.Group).Scan(&groupID)
+	err := db.QueryRow(query, fName, formName, gName).Scan(&groupID)
 	if err != nil {
-		return fmt.Errorf("group not found")
+		http.Error(w, "group not found", http.StatusNotFound)
+		return
 	}
-	return a.GetSchedule(nil, &ScheduleArgs{GroupID: groupID}, reply)
+
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, groupID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var res []Schedule
+	for rows.Next() {
+		var s Schedule
+		if err := rows.Scan(
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonNum,
+			&s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.Mode, &s.Subgroup,
+		); err != nil {
+			continue
+		}
+		res = append(res, s)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) RunScrape(_ *http.Request, _ *EmptyArgs, reply *bool) error {
-	started, queued := requestScrape("rpc")
-	*reply = started || queued
-	return nil
+// Запускает процесс скрапинга
+func runScrapeHandler(w http.ResponseWriter, r *http.Request) {
+	started, queued := requestScrape("rest")
+	res := started || queued
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
-func (a *API) GetScrapeStatus(_ *http.Request, _ *EmptyArgs, reply *scrapeRunState) error {
+// Возвращает текущий статус скрапинга
+func getScrapeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	scrapeMu.Lock()
 	st := scrapeState
 	scrapeMu.Unlock()
-
-	*reply = st
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(st)
 }
