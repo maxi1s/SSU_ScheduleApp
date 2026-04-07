@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 
 type Lesson struct {
 	Time      string `json:"time"`
+	EndTime   string `json:"end_time"`
 	Day       string `json:"day"`
 	Type      string `json:"type"`
 	Name      string `json:"name"`
@@ -104,6 +106,7 @@ var (
 	reDate = regexp.MustCompile(`\b(\d{1,2}\.\d{1,2}\.\d{2,4})\b`)                     // dd.mm.yyyy
 	reTime = regexp.MustCompile(`\b([01]?\d|2[0-3])[:.]\d{2}(?::\d{2})?\b`)            // HH:MM[:SS]
 	reISO  = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\b`) // 2025-10-25 14:30[:ss]
+	reSlot = regexp.MustCompile(`\d{1,2}[:.]\d{2}`)
 )
 
 // Возвращает "DD.MM.YYYY HH:MM" если найдено, иначе "DD.MM.YYYY", иначе "".
@@ -205,10 +208,15 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 	if name == "" && teacher == "" && room == "" && lessonType == "" {
 		return
 	}
+	startTime, endTime := extractSlotTimes(timeSlot)
+	if startTime == "" {
+		startTime = strings.TrimSpace(timeSlot)
+	}
 
 	mu.Lock()
 	group.Schedule = append(group.Schedule, Lesson{
-		Time:      timeSlot,
+		Time:      startTime,
+		EndTime:   endTime,
 		Day:       day,
 		Type:      lessonType,
 		Name:      name,
@@ -220,15 +228,33 @@ func appendLesson(mu *sync.Mutex, group *GroupDoc, timeSlot, day string, lesson 
 	mu.Unlock()
 }
 
+func extractSlotTimes(ts string) (string, string) {
+	ts = strings.TrimSpace(strings.ReplaceAll(ts, ".", ":"))
+	matches := reSlot.FindAllString(ts, -1)
+	if len(matches) == 0 {
+		return "", ""
+	}
+	if len(matches) == 1 {
+		return strings.ReplaceAll(matches[0], ".", ":"), ""
+	}
+	return strings.ReplaceAll(matches[0], ".", ":"), strings.ReplaceAll(matches[len(matches)-1], ".", ":")
+}
+
 func main() {
 	const parallelism = 20 // число потоков
+	requestTimeout := 20 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("SCRAPER_REQUEST_TIMEOUT_SEC")); raw != "" {
+		if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
+			requestTimeout = time.Duration(sec) * time.Second
+		}
+	}
 	c := colly.NewCollector(
 		colly.AllowedDomains("sgu.ru", "www.sgu.ru"),
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"),
 		colly.MaxDepth(2),
 		colly.Async(true),
 	)
-	c.SetRequestTimeout(5 * time.Second)
+	c.SetRequestTimeout(requestTimeout)
 	_ = c.Limit(&colly.LimitRule{
 		DomainGlob:  "*sgu.ru*",
 		Parallelism: parallelism,
@@ -240,6 +266,7 @@ func main() {
 		groupByURL   = make(map[string]*GroupDoc) // канонический URL - группа
 		visitedLink  = make(map[string]struct{})  // защита от дублей
 		output       = Output{GeneratedAt: time.Now()}
+		requestErrs  uint64
 	)
 
 	// скорость «групп/мин»
@@ -248,6 +275,7 @@ func main() {
 
 	// Логи только ошибок
 	c.OnError(func(r *colly.Response, err error) {
+		atomic.AddUint64(&requestErrs, 1)
 		log.Printf("Ошибка %s: %v (HTTP %d)", r.Request.URL, err, r.StatusCode)
 	})
 
@@ -395,6 +423,10 @@ func main() {
 		log.Fatal("Ошибка загрузки главной страницы:", err)
 	}
 	c.Wait()
+
+	if len(output.Groups) == 0 && atomic.LoadUint64(&requestErrs) > 0 {
+		log.Fatalf("скрап завершился без групп из-за сетевых ошибок; увеличьте SCRAPER_REQUEST_TIMEOUT_SEC (сейчас %s)", requestTimeout)
+	}
 
 	buf, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {

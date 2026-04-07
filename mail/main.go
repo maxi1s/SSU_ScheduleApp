@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ var kafkaTopicScrape string
 var kafkaTopicScrapeError string
 var kafkaBrokers []string
 var kafkaTopicScrapeCommands string
+var reSlotHM = regexp.MustCompile(`\d{1,2}:\d{2}`)
 
 type scrapeRunState struct {
 	Running        bool      `json:"running"`
@@ -69,7 +71,6 @@ type Schedule struct {
 	ID        int    `json:"id"`
 	GroupID   int    `json:"group_id"`
 	DayOfWeek int    `json:"day_of_week"`
-	LessonNum int    `json:"lesson_num"`
 	Subject   string `json:"subject"`
 	Teacher   string `json:"teacher"`
 	Room      string `json:"room"`
@@ -106,7 +107,6 @@ func createTables() error {
 			id SERIAL PRIMARY KEY,
 			group_id INT REFERENCES groups(id),
 			day_of_week INT,
-			lesson_num INT,
 			subject TEXT,
 			teacher TEXT,
 			room TEXT,
@@ -114,7 +114,7 @@ func createTables() error {
 			end_time TEXT,
 			mode TEXT,
 			subgroup INT,
-			UNIQUE(group_id, day_of_week, lesson_num, subject, teacher, room, mode, subgroup)
+			UNIQUE(group_id, day_of_week, subject, teacher, room, start_time, mode, subgroup)
 		);`,
 		`CREATE TABLE IF NOT EXISTS data_updates (
 			table_name TEXT PRIMARY KEY,
@@ -192,7 +192,6 @@ func main() {
 		if err := runScrapeAndUpsert(); err != nil {
 			log.Printf("background scrape error: %v", err)
 		}
-		_ = startScrapeAsync("startup")
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -437,6 +436,7 @@ func (n *NumeratorAny) UnmarshalJSON(b []byte) error {
 
 type scrapedLesson struct {
 	Time      string       `json:"time"`
+	EndTime   string       `json:"end_time"`
 	Day       string       `json:"day"`
 	Type      string       `json:"type"`
 	Name      string       `json:"name"`
@@ -623,6 +623,11 @@ func runScrapeAndUpsert() error {
 	}
 
 	groupsCount := len(outJSON.Groups)
+	if groupsCount == 0 {
+		emptyErr := fmt.Errorf("scrapper returned zero groups")
+		publishScrapeFailed("empty_scrape_result", emptyErr, "schedule.json contains 0 groups", time.Since(startTime))
+		return emptyErr
+	}
 	totalLessons := 0
 	for _, g := range outJSON.Groups {
 		if g != nil {
@@ -662,7 +667,15 @@ func runScrapeAndUpsert() error {
 
 		for _, l := range g.Schedule {
 			day := normalizeDayOfWeek(l.Day)
-			start, end := splitTime(l.Time)
+			start := strings.TrimSpace(l.Time)
+			end := strings.TrimSpace(l.EndTime)
+			if end == "" {
+				parsedStart, parsedEnd := splitTime(l.Time)
+				if start == "" {
+					start = parsedStart
+				}
+				end = parsedEnd
+			}
 			mode := "знаменатель"
 			if l.Numerator.Val == 1 {
 				mode = "числитель"
@@ -673,7 +686,6 @@ func runScrapeAndUpsert() error {
 			s := Schedule{
 				GroupID:   groupID,
 				DayOfWeek: day,
-				LessonNum: 0,
 				Subject:   l.Name,
 				Teacher:   l.Teacher,
 				Room:      l.Room,
@@ -746,11 +758,15 @@ func normalizeDayOfWeek(day string) int {
 
 // Разделяет время на начало и конец
 func splitTime(ts string) (string, string) {
-	parts := strings.Split(ts, "-")
-	if len(parts) >= 2 {
-		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	ts = strings.TrimSpace(strings.ReplaceAll(ts, ".", ":"))
+	matches := reSlotHM.FindAllString(ts, -1)
+	if len(matches) == 0 {
+		return "", ""
 	}
-	return "", ""
+	if len(matches) == 1 {
+		return matches[0], ""
+	}
+	return matches[0], matches[len(matches)-1]
 }
 
 // Парсит номер подгруппы
@@ -759,10 +775,10 @@ func parseSubgroup(s string) int {
 	if s == "" {
 		return 0
 	}
-	if s == "1" {
+	if s == "1" || strings.Contains(s, "подгруппа 1") {
 		return 1
 	}
-	if s == "2" {
+	if s == "2" || strings.Contains(s, "подгруппа 2") {
 		return 2
 	}
 	return 0
@@ -801,10 +817,11 @@ func UpsertGroup(name string, facultyID, eduFormID int) error {
 // Добавляет расписание в базу
 func UpsertSchedule(s Schedule) error {
 	_, err := db.Exec(`INSERT INTO schedules (
-		group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup) VALUES
-		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (group_id, day_of_week, lesson_num, subject, teacher, room, mode, subgroup) DO NOTHING`,
-		s.GroupID, s.DayOfWeek, s.LessonNum, s.Subject, s.Teacher, s.Room,
+		group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup) VALUES
+		($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (group_id, day_of_week, subject, teacher, room, start_time, mode, subgroup)
+		DO UPDATE SET end_time=EXCLUDED.end_time`,
+		s.GroupID, s.DayOfWeek, s.Subject, s.Teacher, s.Room,
 		s.StartTime, s.EndTime, s.Mode, s.Subgroup,
 	)
 	if err == nil {
@@ -884,7 +901,7 @@ func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "group_id required", http.StatusBadRequest)
 		return
 	}
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, gID)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, gID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -894,8 +911,7 @@ func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s Schedule
 		if err := rows.Scan(
-			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonNum,
-			&s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
 			&s.Mode, &s.Subgroup,
 		); err != nil {
 			continue
@@ -947,7 +963,7 @@ func getScheduleByPathHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, groupID)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, groupID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -957,8 +973,7 @@ func getScheduleByPathHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s Schedule
 		if err := rows.Scan(
-			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonNum,
-			&s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
 			&s.Mode, &s.Subgroup,
 		); err != nil {
 			continue

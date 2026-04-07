@@ -51,7 +51,7 @@ func (s *grpcServer) GetGroups(ctx context.Context, req *pb.GroupsRequest) (*pb.
 
 // Получает расписание группы
 func (s *grpcServer) GetSchedule(ctx context.Context, req *pb.ScheduleRequest) (*pb.ScheduleResponse, error) {
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_num, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, lesson_num, mode, subgroup`, req.GroupId)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, req.GroupId)
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +60,7 @@ func (s *grpcServer) GetSchedule(ctx context.Context, req *pb.ScheduleRequest) (
 	for rows.Next() {
 		var i pb.ScheduleItem
 		if err := rows.Scan(
-			&i.Id, &i.GroupId, &i.DayOfWeek, &i.LessonNum,
-			&i.Subject, &i.Teacher, &i.Room, &i.StartTime, &i.EndTime,
+			&i.Id, &i.GroupId, &i.DayOfWeek, &i.Subject, &i.Teacher, &i.Room, &i.StartTime, &i.EndTime,
 			&i.Mode, &i.Subgroup,
 		); err != nil {
 			continue
