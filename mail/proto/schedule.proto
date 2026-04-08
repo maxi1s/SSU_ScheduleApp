@@ -31,13 +31,13 @@ message ScheduleItem {
     int32 id = 1;
     int32 group_id = 2;
     int32 day_of_week = 3;
-    string subject = 5;
-    string teacher = 6;
-    string room = 7;
-    string start_time = 8;
-    string end_time = 9;
-    string mode = 10;
-    int32 subgroup = 11;
+    string subject = 4;
+    string teacher = 5;
+    string room = 6;
+    string start_time = 7;
+    string end_time = 8;
+    string mode = 9;
+    int32 subgroup = 10;
 }
 
 message FacultiesResponse {

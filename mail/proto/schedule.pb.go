@@ -182,14 +182,13 @@ type ScheduleItem struct {
 	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	GroupId       int32                  `protobuf:"varint,2,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	DayOfWeek     int32                  `protobuf:"varint,3,opt,name=day_of_week,json=dayOfWeek,proto3" json:"day_of_week,omitempty"`
-	LessonNum     int32                  `protobuf:"varint,4,opt,name=lesson_num,json=lessonNum,proto3" json:"lesson_num,omitempty"`
-	Subject       string                 `protobuf:"bytes,5,opt,name=subject,proto3" json:"subject,omitempty"`
-	Teacher       string                 `protobuf:"bytes,6,opt,name=teacher,proto3" json:"teacher,omitempty"`
-	Room          string                 `protobuf:"bytes,7,opt,name=room,proto3" json:"room,omitempty"`
-	StartTime     string                 `protobuf:"bytes,8,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
-	EndTime       string                 `protobuf:"bytes,9,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
-	Mode          string                 `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
-	Subgroup      int32                  `protobuf:"varint,11,opt,name=subgroup,proto3" json:"subgroup,omitempty"`
+	Subject       string                 `protobuf:"bytes,4,opt,name=subject,proto3" json:"subject,omitempty"`
+	Teacher       string                 `protobuf:"bytes,5,opt,name=teacher,proto3" json:"teacher,omitempty"`
+	Room          string                 `protobuf:"bytes,6,opt,name=room,proto3" json:"room,omitempty"`
+	StartTime     string                 `protobuf:"bytes,7,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	EndTime       string                 `protobuf:"bytes,8,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	Mode          string                 `protobuf:"bytes,9,opt,name=mode,proto3" json:"mode,omitempty"`
+	Subgroup      int32                  `protobuf:"varint,10,opt,name=subgroup,proto3" json:"subgroup,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -241,13 +240,6 @@ func (x *ScheduleItem) GetGroupId() int32 {
 func (x *ScheduleItem) GetDayOfWeek() int32 {
 	if x != nil {
 		return x.DayOfWeek
-	}
-	return 0
-}
-
-func (x *ScheduleItem) GetLessonNum() int32 {
-	if x != nil {
-		return x.LessonNum
 	}
 	return 0
 }
@@ -775,22 +767,20 @@ const file_proto_schedule_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"faculty_id\x18\x03 \x01(\x05R\tfacultyId\x12\x1e\n" +
-	"\vedu_form_id\x18\x04 \x01(\x05R\teduFormId\"\xaa\x02\n" +
+	"\vedu_form_id\x18\x04 \x01(\x05R\teduFormId\"\x8b\x02\n" +
 	"\fScheduleItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\x05R\agroupId\x12\x1e\n" +
-	"\vday_of_week\x18\x03 \x01(\x05R\tdayOfWeek\x12\x1d\n" +
+	"\vday_of_week\x18\x03 \x01(\x05R\tdayOfWeek\x12\x18\n" +
+	"\asubject\x18\x04 \x01(\tR\asubject\x12\x18\n" +
+	"\ateacher\x18\x05 \x01(\tR\ateacher\x12\x12\n" +
+	"\x04room\x18\x06 \x01(\tR\x04room\x12\x1d\n" +
 	"\n" +
-	"lesson_num\x18\x04 \x01(\x05R\tlessonNum\x12\x18\n" +
-	"\asubject\x18\x05 \x01(\tR\asubject\x12\x18\n" +
-	"\ateacher\x18\x06 \x01(\tR\ateacher\x12\x12\n" +
-	"\x04room\x18\a \x01(\tR\x04room\x12\x1d\n" +
-	"\n" +
-	"start_time\x18\b \x01(\tR\tstartTime\x12\x19\n" +
-	"\bend_time\x18\t \x01(\tR\aendTime\x12\x12\n" +
-	"\x04mode\x18\n" +
-	" \x01(\tR\x04mode\x12\x1a\n" +
-	"\bsubgroup\x18\v \x01(\x05R\bsubgroup\"D\n" +
+	"start_time\x18\a \x01(\tR\tstartTime\x12\x19\n" +
+	"\bend_time\x18\b \x01(\tR\aendTime\x12\x12\n" +
+	"\x04mode\x18\t \x01(\tR\x04mode\x12\x1a\n" +
+	"\bsubgroup\x18\n" +
+	" \x01(\x05R\bsubgroup\"D\n" +
 	"\x11FacultiesResponse\x12/\n" +
 	"\tfaculties\x18\x01 \x03(\v2\x11.schedule.FacultyR\tfaculties\"N\n" +
 	"\rGroupsRequest\x12\x1d\n" +
