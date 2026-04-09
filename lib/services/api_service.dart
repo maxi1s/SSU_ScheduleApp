@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:grpc/grpc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import '../generated/schedule.pbgrpc.dart';
 import '../generated/schedule.pb.dart';
 
@@ -6,7 +9,13 @@ class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
-  static const String host = '10.0.2.2';
+  // Динамический выбор хоста для мобильных устройств
+  static String get host {
+    return (defaultTargetPlatform == TargetPlatform.android)
+        ? '10.0.2.2'
+        : '127.0.0.1';
+  }
+
   static const int port = 8082;
 
   late ClientChannel _channel;
@@ -35,15 +44,29 @@ class ApiService {
         print('⚠️ Сервер вернул пустой список факультетов!');
       }
 
-      return response.faculties.map((f) {
+      final data = response.faculties.map((f) {
         return {
           'id': f.id,
           'name': f
               .name, // gRPC поле name -> в модели Faculty.fromJson попадет в code
         };
       }).toList();
+
+      // Кэшируем список факультетов
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_faculties', json.encode(data));
+
+      return data;
     } catch (e) {
-      print('❌ Ошибка gRPC загрузки факультетов: $e');
+      print(' Ошибка gRPC загрузки факультетов: $e');
+
+      // Пытаемся загрузить из кэша
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('cached_faculties');
+      if (cached != null) {
+        print(' Загружены факультеты из кэша (offline)');
+        return json.decode(cached);
+      }
       rethrow;
     }
   }
@@ -63,7 +86,7 @@ class ApiService {
 
       print('✅ Группы - Получено: ${response.groups.length}');
 
-      return response.groups.map((g) {
+      final data = response.groups.map((g) {
         // Извлекаем курс из названия группы ("411" -> 4)
         int course = 1;
         if (g.name.isNotEmpty) {
@@ -79,8 +102,23 @@ class ApiService {
           'edu_form_id': eduFormId,
         };
       }).toList();
+
+      // Кэшируем список групп для этого сочетания
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          'cached_groups_${facultyId}_$eduFormId', json.encode(data));
+
+      return data;
     } catch (e) {
-      print('❌ Ошибка gRPC загрузки групп: $e');
+      print(' Ошибка gRPC загрузки групп: $e');
+
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('cached_groups_${facultyId}_$eduFormId');
+      if (cached != null) {
+        print(' Загружены группы из кэша (offline)');
+        return json.decode(cached);
+      }
+
       return _getMockGroups(facultyId, eduFormId);
     }
   }
@@ -97,12 +135,12 @@ class ApiService {
 
       print('✅ Расписание - Получено пар: ${response.schedule.length}');
 
-      return response.schedule.map((s) {
+      final data = response.schedule.map((s) {
         return {
           'id': s.id,
           'group_id': s.groupId,
           'day_of_week': s.dayOfWeek,
-          'lesson_num': 0, // В прото нет lesson_num, ставим 0
+          'lesson_num': 0,
           'subject': s.subject,
           'teacher': s.teacher,
           'room': s.room,
@@ -112,8 +150,22 @@ class ApiService {
           'subgroup': s.subgroup,
         };
       }).toList();
+
+      // Кэшируем расписание группы
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_schedule_$groupId', json.encode(data));
+
+      return data;
     } catch (e) {
-      print('❌ Ошибка gRPC загрузки расписания: $e');
+      print(' Ошибка gRPC загрузки расписания: $e');
+
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('cached_schedule_$groupId');
+      if (cached != null) {
+        print(' Загружено расписание из кэша (offline)');
+        return json.decode(cached);
+      }
+
       return _getMockSchedule();
     }
   }

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import '../models/faculty.dart';
 import '../services/api_service.dart';
 import 'schedule_screen.dart';
@@ -26,7 +28,65 @@ class _SelectionScreenState extends State<SelectionScreen> {
   @override
   void initState() {
     super.initState();
-    _loadFaculties();
+    _loadInitialData();
+  }
+
+  Future<void> _loadInitialData() async {
+    await _loadFaculties();
+    await _loadSavedSelection();
+  }
+
+  // Сохранение выбора
+  Future<void> _saveSelection() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (selectedFaculty != null) {
+      await prefs.setString('selected_faculty', json.encode({
+        'id': selectedFaculty!.id,
+        'name': selectedFaculty!.code,
+      }));
+    }
+    if (selectedEduForm != null) {
+      await prefs.setInt('selected_edu_form_id', selectedEduForm!.id);
+    }
+    if (selectedGroup != null) {
+      await prefs.setString('selected_group', json.encode({
+        'id': selectedGroup!.id,
+        'name': selectedGroup!.name,
+        'course': selectedGroup!.course,
+        'faculty_id': selectedGroup!.facultyId,
+        'edu_form_id': selectedGroup!.eduFormId,
+      }));
+    }
+  }
+
+  // Загрузка сохраненного выбора
+  Future<void> _loadSavedSelection() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      final facultyJson = prefs.getString('selected_faculty');
+      if (facultyJson != null) {
+        selectedFaculty = Faculty.fromJson(json.decode(facultyJson));
+      }
+
+      final eduFormId = prefs.getInt('selected_edu_form_id');
+      if (eduFormId != null) {
+        selectedEduForm = eduForms.firstWhere((f) => f.id == eduFormId);
+      }
+
+      final groupJson = prefs.getString('selected_group');
+      if (groupJson != null) {
+        selectedGroup = Group.fromJson(json.decode(groupJson));
+        // Если группа есть, сразу подгружаем список групп для этого факультета
+        if (selectedFaculty != null && selectedEduForm != null) {
+          _loadGroups(silent: true);
+        }
+      }
+      
+      setState(() {});
+    } catch (e) {
+      print('Ошибка загрузки кэша: $e');
+    }
   }
 
   Future<void> _loadFaculties() async {
@@ -49,14 +109,16 @@ class _SelectionScreenState extends State<SelectionScreen> {
     }
   }
 
-  Future<void> _loadGroups() async {
+  Future<void> _loadGroups({bool silent = false}) async {
     if (selectedFaculty == null || selectedEduForm == null) return;
 
     try {
-      setState(() {
-        groups = [];
-        selectedGroup = null;
-      });
+      if (!silent) {
+        setState(() {
+          groups = [];
+          selectedGroup = null;
+        });
+      }
 
       final apiService = ApiService();
       final data =
@@ -69,9 +131,11 @@ class _SelectionScreenState extends State<SelectionScreen> {
         groups = loadedGroups;
       });
     } catch (e) {
-      setState(() {
-        errorMessage = 'Ошибка загрузки групп: $e';
-      });
+      if (!silent) {
+        setState(() {
+          errorMessage = 'Ошибка загрузки групп: $e';
+        });
+      }
     }
   }
 
@@ -82,6 +146,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
       selectedGroup = null;
       groups = [];
     });
+    _saveSelection();
   }
 
   void _onEduFormSelected(EduForm? eduForm) {
@@ -94,12 +159,14 @@ class _SelectionScreenState extends State<SelectionScreen> {
     if (eduForm != null) {
       _loadGroups();
     }
+    _saveSelection();
   }
 
   void _onGroupSelected(Group? group) {
     setState(() {
       selectedGroup = group;
     });
+    _saveSelection();
   }
 
   void _showSchedule() {
@@ -220,7 +287,6 @@ class _SelectionScreenState extends State<SelectionScreen> {
               child: const Text('Показать расписание'),
             ),
 
-            // УБРАЛ БЛОК "ВЫБРАНО:" - теперь просто чистая кнопка
           ],
         ),
       ),
