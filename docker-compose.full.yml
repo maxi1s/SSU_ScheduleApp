@@ -83,6 +83,7 @@ services:
       - KAFKA_TOPIC_SCRAPE_COMMANDS=schedule.scrape.commands
     ports:
       - "8081:8081"
+      - "8082:8082"
     volumes:
       - ./schedule_data:/app/data
     depends_on:
