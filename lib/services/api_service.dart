@@ -31,12 +31,17 @@ class ApiService {
 
       print('✅ Факультеты - Получено: ${response.faculties.length}');
 
-      return response.faculties
-          .map((f) => {
-                'id': f.id,
-                'name': f.name,
-              })
-          .toList();
+      if (response.faculties.isEmpty) {
+        print('⚠️ Сервер вернул пустой список факультетов!');
+      }
+
+      return response.faculties.map((f) {
+        return {
+          'id': f.id,
+          'name': f
+              .name, // gRPC поле name -> в модели Faculty.fromJson попадет в code
+        };
+      }).toList();
     } catch (e) {
       print('❌ Ошибка gRPC загрузки факультетов: $e');
       rethrow;
@@ -58,14 +63,22 @@ class ApiService {
 
       print('✅ Группы - Получено: ${response.groups.length}');
 
-      return response.groups
-          .map((g) => {
-                'id': g.id,
-                'name': g.name,
-                'faculty_id': g.facultyId,
-                'edu_form_id': g.eduFormId,
-              })
-          .toList();
+      return response.groups.map((g) {
+        // Извлекаем курс из названия группы ("411" -> 4)
+        int course = 1;
+        if (g.name.isNotEmpty) {
+          final firstDigit = g.name.substring(0, 1);
+          course = int.tryParse(firstDigit) ?? 1;
+        }
+
+        return {
+          'id': g.id,
+          'name': g.name,
+          'course': course,
+          'faculty_id': facultyId,
+          'edu_form_id': eduFormId,
+        };
+      }).toList();
     } catch (e) {
       print('❌ Ошибка gRPC загрузки групп: $e');
       return _getMockGroups(facultyId, eduFormId);
@@ -84,20 +97,21 @@ class ApiService {
 
       print('✅ Расписание - Получено пар: ${response.schedule.length}');
 
-      return response.schedule
-          .map((s) => {
-                'id': s.id,
-                'group_id': s.groupId,
-                'day_of_week': s.dayOfWeek,
-                'subject': s.subject,
-                'teacher': s.teacher,
-                'room': s.room,
-                'start_time': s.startTime,
-                'end_time': s.endTime,
-                'mode': s.mode,
-                'subgroup': s.subgroup,
-              })
-          .toList();
+      return response.schedule.map((s) {
+        return {
+          'id': s.id,
+          'group_id': s.groupId,
+          'day_of_week': s.dayOfWeek,
+          'lesson_num': 0, // В прото нет lesson_num, ставим 0
+          'subject': s.subject,
+          'teacher': s.teacher,
+          'room': s.room,
+          'start_time': s.startTime,
+          'end_time': s.endTime,
+          'mode': s.mode,
+          'subgroup': s.subgroup,
+        };
+      }).toList();
     } catch (e) {
       print('❌ Ошибка gRPC загрузки расписания: $e');
       return _getMockSchedule();

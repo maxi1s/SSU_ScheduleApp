@@ -34,7 +34,8 @@ class _SelectionScreenState extends State<SelectionScreen> {
       final apiService = ApiService();
       final data = await apiService.getFaculties();
 
-      final List<Faculty> loadedFaculties = data.map((json) => Faculty.fromJson(json)).toList();
+      final List<Faculty> loadedFaculties =
+          data.map((json) => Faculty.fromJson(json)).toList();
 
       setState(() {
         faculties = loadedFaculties;
@@ -58,9 +59,11 @@ class _SelectionScreenState extends State<SelectionScreen> {
       });
 
       final apiService = ApiService();
-      final data = await apiService.getGroups(selectedFaculty!.id, selectedEduForm!.id);
+      final data =
+          await apiService.getGroups(selectedFaculty!.id, selectedEduForm!.id);
 
-      final List<Group> loadedGroups = data.map((json) => Group.fromJson(json)).toList();
+      final List<Group> loadedGroups =
+          data.map((json) => Group.fromJson(json)).toList();
 
       setState(() {
         groups = loadedGroups;
@@ -209,7 +212,8 @@ class _SelectionScreenState extends State<SelectionScreen> {
             ElevatedButton(
               onPressed: selectedGroup != null ? _showSchedule : null,
               style: ElevatedButton.styleFrom(
-                backgroundColor: selectedGroup != null ? Colors.blue : Colors.grey,
+                backgroundColor:
+                    selectedGroup != null ? Colors.blue : Colors.grey,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 50),
               ),
