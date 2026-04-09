@@ -1,103 +1,171 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:grpc/grpc.dart';
+import '../generated/schedule.pbgrpc.dart';
+import '../generated/schedule.pb.dart';
 
 class ApiService {
-  static const String baseUrl = 'http://10.0.2.2:8081';
+  static final ApiService _instance = ApiService._internal();
+  factory ApiService() => _instance;
+
+  static const String host = '10.0.2.2';
+  static const int port = 8082;
+
+  late ClientChannel _channel;
+  late ScheduleServiceClient _stub;
+
+  ApiService._internal() {
+    _channel = ClientChannel(
+      host,
+      port: port,
+      options: const ChannelOptions(credentials: ChannelCredentials.insecure()),
+    );
+    _stub = ScheduleServiceClient(_channel);
+  }
 
   Future<List<dynamic>> getFaculties() async {
     try {
-      print('🔄 Загружаем факультеты: $baseUrl/faculties');
+      print('🔄 Загружаем факультеты через gRPC: $host:$port');
 
-      final response = await http.get(
-        Uri.parse('$baseUrl/faculties'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      final response = await _stub
+          .getFaculties(Empty())
+          .timeout(const Duration(seconds: 10));
 
-      print('✅ Факультеты - Статус: ${response.statusCode}');
+      print('✅ Факультеты - Получено: ${response.faculties.length}');
 
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonData = json.decode(response.body);
-        print('📊 Получено факультетов: ${jsonData.length}');
-        return jsonData;
-      } else {
-        throw Exception('HTTP ошибка: ${response.statusCode}');
-      }
+      return response.faculties
+          .map((f) => {
+                'id': f.id,
+                'name': f.name,
+              })
+          .toList();
     } catch (e) {
-      print('❌ Ошибка загрузки факультетов: $e');
+      print('❌ Ошибка gRPC загрузки факультетов: $e');
       rethrow;
     }
   }
 
   Future<List<dynamic>> getGroups(int facultyId, int eduFormId) async {
     try {
-      print('🔄 Загружаем группы для факультета: $facultyId, формы: $eduFormId');
+      print(
+          '🔄 Загружаем группы для факультета: $facultyId, формы: $eduFormId через gRPC');
 
-      final response = await http.get(
-        Uri.parse('$baseUrl/groups?faculty_id=$facultyId&edu_form_id=$eduFormId'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      final response = await _stub
+          .getGroups(
+            GroupsRequest()
+              ..facultyId = facultyId
+              ..eduFormId = eduFormId,
+          )
+          .timeout(const Duration(seconds: 10));
 
-      print('✅ Группы - Статус: ${response.statusCode}');
+      print('✅ Группы - Получено: ${response.groups.length}');
 
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonData = json.decode(response.body);
-        print('📊 Получено групп: ${jsonData.length}');
-        return jsonData;
-      } else {
-        throw Exception('Ошибка загрузки групп: ${response.statusCode}');
-      }
+      return response.groups
+          .map((g) => {
+                'id': g.id,
+                'name': g.name,
+                'faculty_id': g.facultyId,
+                'edu_form_id': g.eduFormId,
+              })
+          .toList();
     } catch (e) {
-      print('❌ Ошибка загрузки групп: $e');
-      // Временные тестовые группы
+      print('❌ Ошибка gRPC загрузки групп: $e');
       return _getMockGroups(facultyId, eduFormId);
     }
   }
 
-  // ДОБАВЛЯЕМ МЕТОД ДЛЯ РАСПИСАНИЯ
   Future<List<dynamic>> getSchedule(int groupId) async {
     try {
-      print('🔄 Загружаем расписание для группы: $groupId');
+      print('🔄 Загружаем расписание для группы: $groupId через gRPC');
 
-      final response = await http.get(
-        Uri.parse('$baseUrl/schedule?group_id=$groupId'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      final response = await _stub
+          .getSchedule(
+            ScheduleRequest()..groupId = groupId,
+          )
+          .timeout(const Duration(seconds: 10));
 
-      print('✅ Расписание - Статус: ${response.statusCode}');
+      print('✅ Расписание - Получено пар: ${response.schedule.length}');
 
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonData = json.decode(response.body);
-        print('📊 Получено пар: ${jsonData.length}');
-        return jsonData;
-      } else {
-        throw Exception('Ошибка загрузки расписания: ${response.statusCode}');
-      }
+      return response.schedule
+          .map((s) => {
+                'id': s.id,
+                'group_id': s.groupId,
+                'day_of_week': s.dayOfWeek,
+                'subject': s.subject,
+                'teacher': s.teacher,
+                'room': s.room,
+                'start_time': s.startTime,
+                'end_time': s.endTime,
+                'mode': s.mode,
+                'subgroup': s.subgroup,
+              })
+          .toList();
     } catch (e) {
-      print('❌ Ошибка загрузки расписания: $e');
-      // Временные тестовые данные
+      print('❌ Ошибка gRPC загрузки расписания: $e');
       return _getMockSchedule();
     }
   }
 
   List<dynamic> _getMockGroups(int facultyId, int eduFormId) {
     // Тестовые данные для разработки
-    if (facultyId == 619 && eduFormId == 1) { // КНИИТ очная
+    if (facultyId == 619 && eduFormId == 1) {
+      // КНИИТ очная
       return [
-        {'id': 1, 'name': '411', 'course': 4, 'faculty_id': 619, 'edu_form_id': 1},
-        {'id': 2, 'name': '412', 'course': 4, 'faculty_id': 619, 'edu_form_id': 1},
-        {'id': 3, 'name': '421', 'course': 4, 'faculty_id': 619, 'edu_form_id': 1},
-        {'id': 4, 'name': '431', 'course': 4, 'faculty_id': 619, 'edu_form_id': 1},
+        {
+          'id': 1,
+          'name': '411',
+          'course': 4,
+          'faculty_id': 619,
+          'edu_form_id': 1
+        },
+        {
+          'id': 2,
+          'name': '412',
+          'course': 4,
+          'faculty_id': 619,
+          'edu_form_id': 1
+        },
+        {
+          'id': 3,
+          'name': '421',
+          'course': 4,
+          'faculty_id': 619,
+          'edu_form_id': 1
+        },
+        {
+          'id': 4,
+          'name': '431',
+          'course': 4,
+          'faculty_id': 619,
+          'edu_form_id': 1
+        },
       ];
     }
 
     return [
-      {'id': 5, 'name': '101', 'course': 1, 'faculty_id': facultyId, 'edu_form_id': eduFormId},
-      {'id': 6, 'name': '102', 'course': 1, 'faculty_id': facultyId, 'edu_form_id': eduFormId},
-      {'id': 7, 'name': '201', 'course': 2, 'faculty_id': facultyId, 'edu_form_id': eduFormId},
+      {
+        'id': 5,
+        'name': '101',
+        'course': 1,
+        'faculty_id': facultyId,
+        'edu_form_id': eduFormId
+      },
+      {
+        'id': 6,
+        'name': '102',
+        'course': 1,
+        'faculty_id': facultyId,
+        'edu_form_id': eduFormId
+      },
+      {
+        'id': 7,
+        'name': '201',
+        'course': 2,
+        'faculty_id': facultyId,
+        'edu_form_id': eduFormId
+      },
     ];
   }
 
-  // ДОБАВЛЯЕМ МЕТОД ДЛЯ ТЕСТОВЫХ ДАННЫХ РАСПИСАНИЯ
+  // тестовые данные
   List<dynamic> _getMockSchedule() {
     return [
       {
