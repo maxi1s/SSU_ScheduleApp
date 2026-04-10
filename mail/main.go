@@ -152,6 +152,10 @@ func main() {
 	r := mux.NewRouter()
 	api := r.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/faculties", getFacultiesHandler).Methods("GET")
+	api.HandleFunc("/faculties", createFacultyHandler).Methods("POST")
+	api.HandleFunc("/faculties/{id:[0-9]+}", updateFacultyHandler).Methods("PUT")
+	api.HandleFunc("/faculties/{id:[0-9]+}", patchFacultyHandler).Methods("PATCH")
+	api.HandleFunc("/faculties/{id:[0-9]+}", deleteFacultyHandler).Methods("DELETE")
 	api.HandleFunc("/groups", getGroupsHandler).Methods("GET")
 	api.HandleFunc("/schedule", getScheduleHandler).Methods("GET")
 	api.HandleFunc("/last_updated", getLastUpdatedHandler).Methods("GET")
@@ -999,4 +1003,72 @@ func getScrapeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	scrapeMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(st)
+}
+
+// Создает новый факультет
+func createFacultyHandler(w http.ResponseWriter, r *http.Request) {
+	var f Faculty
+	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	err := db.QueryRow("INSERT INTO faculties (name) VALUES ($1) RETURNING id", f.Name).Scan(&f.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(f)
+}
+
+// Полностью обновляет факультет
+func updateFacultyHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	var f Faculty
+	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	_, err := db.Exec("UPDATE faculties SET name = $1 WHERE id = $2", f.Name, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Частично обновляет факультет
+func patchFacultyHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	var update map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	name, ok := update["name"].(string)
+	if !ok {
+		http.Error(w, "name required as string", http.StatusBadRequest)
+		return
+	}
+	_, err := db.Exec("UPDATE faculties SET name = $1 WHERE id = $2", name, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Удаляет факультет
+func deleteFacultyHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	_, err := db.Exec("DELETE FROM faculties WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
