@@ -1,19 +1,14 @@
-import 'package:flutter/foundation.dart';
 import 'package:grpc/grpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../generated/schedule.pbgrpc.dart';
-import '../generated/schedule.pb.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
 
-  // Динамический выбор хоста для мобильных устройств
   static String get host {
-    return (defaultTargetPlatform == TargetPlatform.android)
-        ? '10.0.2.2'
-        : '127.0.0.1';
+    return '155.212.247.36';
   }
 
   static const int port = 8082;
