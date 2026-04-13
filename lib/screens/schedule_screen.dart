@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/schedule.dart';
 import '../models/faculty.dart';
 import '../services/api_service.dart';
+import '../services/widget_service.dart';
 
 class ScheduleScreen extends StatefulWidget {
   final Group selectedGroup;
@@ -37,7 +38,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
   Future<void> _loadSchedule() async {
     try {
-      print('🎯 Начинаем загрузку расписания для группы: ${widget.selectedGroup.id}');
+      print(
+          '🎯 Начинаем загрузку расписания для группы: ${widget.selectedGroup.id}');
 
       final apiService = ApiService();
       final data = await apiService.getSchedule(widget.selectedGroup.id);
@@ -56,6 +58,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         _filterSchedulesByDay(selectedDayIndex);
         isLoading = false;
       });
+      // Обновляем виджет после загрузки свежего расписания
+      await WidgetService.updateWidgetData();
     } catch (e) {
       print('💥 Критическая ошибка: $e');
       setState(() {
@@ -72,7 +76,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
     setState(() {
       selectedDayIndex = dayIndex;
-      filteredSchedules = schedules.where((schedule) => schedule.dayOfWeek == selectedDayNumber).toList();
+      filteredSchedules = schedules
+          .where((schedule) => schedule.dayOfWeek == selectedDayNumber)
+          .toList();
     });
   }
 
@@ -88,7 +94,15 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   String _getFullDayName(int index) {
-    final fullDays = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+    final fullDays = [
+      'Понедельник',
+      'Вторник',
+      'Среда',
+      'Четверг',
+      'Пятница',
+      'Суббота',
+      'Воскресенье'
+    ];
     return fullDays[index];
   }
 
@@ -103,148 +117,161 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : errorMessage.isNotEmpty
-          ? Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text('Ошибка: $errorMessage'),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _loadSchedule,
-              child: const Text('Повторить'),
-            ),
-          ],
-        ),
-      )
-          : Column(
-        children: [
-          // Ползунок с днями недели
-          Container(
-            height: 60,
-            color: Colors.grey[50],
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: daysOfWeek.length,
-              itemBuilder: (context, index) {
-                return GestureDetector(
-                  onTap: () => _filterSchedulesByDay(index),
-                  child: Container(
-                    width: 60,
-                    margin: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: selectedDayIndex == index ? Colors.blue : Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: selectedDayIndex == index ? Colors.blue : Colors.grey,
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('Ошибка: $errorMessage'),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _loadSchedule,
+                        child: const Text('Повторить'),
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.3),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          daysOfWeek[index],
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: selectedDayIndex == index ? Colors.white : Colors.black,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            color: selectedDayIndex == index ? Colors.white : Colors.transparent,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ],
-                    ),
+                    ],
                   ),
-                );
-              },
-            ),
-          ),
-
-          // Заголовок дня
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              _getFullDayName(selectedDayIndex),
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.blue,
-              ),
-            ),
-          ),
-
-          // Список пар
-          Expanded(
-            child: filteredSchedules.isEmpty
-                ? const Center(
-              child: Text(
-                'На этот день пар нет',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
-              ),
-            )
-                : ListView.builder(
-              itemCount: filteredSchedules.length,
-              itemBuilder: (context, index) {
-                final schedule = filteredSchedules[index];
-                return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: _getTypeColor(schedule.mode),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: ListTile(
-                      leading: Container(
-                        width: 60,
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          schedule.timeRange,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
+                )
+              : Column(
+                  children: [
+                    // Ползунок с днями недели
+                    Container(
+                      height: 60,
+                      color: Colors.grey[50],
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: daysOfWeek.length,
+                        itemBuilder: (context, index) {
+                          return GestureDetector(
+                            onTap: () => _filterSchedulesByDay(index),
+                            child: Container(
+                              width: 60,
+                              margin: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: selectedDayIndex == index
+                                    ? Colors.blue
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: selectedDayIndex == index
+                                      ? Colors.blue
+                                      : Colors.grey,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.grey.withOpacity(0.3),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    daysOfWeek[index],
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: selectedDayIndex == index
+                                          ? Colors.white
+                                          : Colors.black,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      color: selectedDayIndex == index
+                                          ? Colors.white
+                                          : Colors.transparent,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                      title: Text(
-                        schedule.subject,
+                    ),
+
+                    // Заголовок дня
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Text(
+                        _getFullDayName(selectedDayIndex),
                         style: const TextStyle(
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
-                          fontSize: 16,
+                          color: Colors.blue,
                         ),
                       ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('${schedule.mode} · ${schedule.room}'),
-                          Text(schedule.teacher),
-                        ],
-                      ),
                     ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
+
+                    // Список пар
+                    Expanded(
+                      child: filteredSchedules.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'На этот день пар нет',
+                                style:
+                                    TextStyle(fontSize: 16, color: Colors.grey),
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: filteredSchedules.length,
+                              itemBuilder: (context, index) {
+                                final schedule = filteredSchedules[index];
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 4),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: _getTypeColor(schedule.mode),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: ListTile(
+                                      leading: Container(
+                                        width: 60,
+                                        padding: const EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: Text(
+                                          schedule.timeRange,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ),
+                                      title: Text(
+                                        schedule.subject,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                      subtitle: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                              '${schedule.mode} · ${schedule.room}'),
+                                          Text(schedule.teacher),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
     );
   }
 }

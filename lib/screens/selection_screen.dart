@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../models/faculty.dart';
 import '../services/api_service.dart';
+import '../services/widget_service.dart';
 import 'schedule_screen.dart';
 import '../widgets/custom_dropdown.dart';
 
@@ -34,28 +35,37 @@ class _SelectionScreenState extends State<SelectionScreen> {
   Future<void> _loadInitialData() async {
     await _loadFaculties();
     await _loadSavedSelection();
+    // Обновляем виджет при запуске приложения
+    await WidgetService.updateWidgetData();
   }
 
   // Сохранение выбора
   Future<void> _saveSelection() async {
     final prefs = await SharedPreferences.getInstance();
     if (selectedFaculty != null) {
-      await prefs.setString('selected_faculty', json.encode({
-        'id': selectedFaculty!.id,
-        'name': selectedFaculty!.code,
-      }));
+      await prefs.setString(
+          'selected_faculty',
+          json.encode({
+            'id': selectedFaculty!.id,
+            'name': selectedFaculty!.code,
+          }));
     }
     if (selectedEduForm != null) {
       await prefs.setInt('selected_edu_form_id', selectedEduForm!.id);
     }
     if (selectedGroup != null) {
-      await prefs.setString('selected_group', json.encode({
-        'id': selectedGroup!.id,
-        'name': selectedGroup!.name,
-        'course': selectedGroup!.course,
-        'faculty_id': selectedGroup!.facultyId,
-        'edu_form_id': selectedGroup!.eduFormId,
-      }));
+      await prefs.setString(
+          'selected_group',
+          json.encode({
+            'id': selectedGroup!.id,
+            'name': selectedGroup!.name,
+            'course': selectedGroup!.course,
+            'faculty_id': selectedGroup!.facultyId,
+            'edu_form_id': selectedGroup!.eduFormId,
+          }));
+      await prefs.setInt('selected_group_id', selectedGroup!.id);
+      // Обновляем виджет при смене группы
+      await WidgetService.updateWidgetData();
     }
   }
 
@@ -63,7 +73,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
   Future<void> _loadSavedSelection() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      
+
       final facultyJson = prefs.getString('selected_faculty');
       if (facultyJson != null) {
         selectedFaculty = Faculty.fromJson(json.decode(facultyJson));
@@ -82,7 +92,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
           _loadGroups(silent: true);
         }
       }
-      
+
       setState(() {});
     } catch (e) {
       print('Ошибка загрузки кэша: $e');
@@ -286,7 +296,6 @@ class _SelectionScreenState extends State<SelectionScreen> {
               ),
               child: const Text('Показать расписание'),
             ),
-
           ],
         ),
       ),
