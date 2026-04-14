@@ -40,14 +40,15 @@ class WidgetService {
       todaySchedule.sort((a, b) => a.startTime.compareTo(b.startTime));
 
       final dayName = _getDayName(currentDayOfWeek);
-      
+
       String content;
       if (todaySchedule.isEmpty) {
         content = 'Пар на сегодня нет';
       } else {
         content = todaySchedule.map((s) {
           final time = s.startTime.isNotEmpty ? s.startTime : '--:--';
-          return '$time | ${s.subject}';
+          final suffix = _getShortMode(s.mode);
+          return '$time $suffix| ${s.subject}';
         }).join('\n');
       }
 
@@ -65,6 +66,12 @@ class WidgetService {
       name: _androidWidgetName,
       androidName: _androidWidgetName,
     );
+  }
+
+  static String _getShortMode(String mode) {
+    if (mode.toLowerCase() == 'числитель') return '[Ч]';
+    if (mode.toLowerCase() == 'знаменатель') return '[З]';
+    return '';
   }
 
   static String _getDayName(int day) {

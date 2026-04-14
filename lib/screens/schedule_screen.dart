@@ -106,6 +106,18 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     return fullDays[index];
   }
 
+  String _cleanMode(String mode) {
+    if (mode.toLowerCase() == 'оба') return '';
+    return mode;
+  }
+
+  String _buildModeRoom(Schedule schedule) {
+    final mode = _cleanMode(schedule.mode);
+    if (mode.isEmpty) return schedule.room;
+    if (schedule.room.isEmpty) return mode;
+    return '$mode · ${schedule.room}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -259,8 +271,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
                                         children: [
-                                          Text(
-                                              '${schedule.mode} · ${schedule.room}'),
+                                          Text(_buildModeRoom(schedule)),
                                           Text(schedule.teacher),
                                         ],
                                       ),
