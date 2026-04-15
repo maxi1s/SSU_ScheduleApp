@@ -71,13 +71,14 @@ type Schedule struct {
 	ID        int    `json:"id"`
 	GroupID   int    `json:"group_id"`
 	DayOfWeek int    `json:"day_of_week"`
+	LessonType string `json:"lesson_type"`
 	Subject   string `json:"subject"`
 	Teacher   string `json:"teacher"`
 	Room      string `json:"room"`
 	StartTime string `json:"start_time"`
 	EndTime   string `json:"end_time"`
 	Mode      string `json:"mode"`
-	Subgroup  int    `json:"subgroup"`
+	Subgroup  string `json:"subgroup"`
 }
 
 type DataUpdate struct {
@@ -107,13 +108,14 @@ func createTables() error {
 			id SERIAL PRIMARY KEY,
 			group_id INT REFERENCES groups(id),
 			day_of_week INT,
+			lesson_type TEXT,
 			subject TEXT,
 			teacher TEXT,
 			room TEXT,
 			start_time TEXT,
 			end_time TEXT,
 			mode TEXT,
-			subgroup INT,
+			subgroup TEXT,
 			UNIQUE(group_id, day_of_week, subject, teacher, room, start_time, mode, subgroup)
 		);`,
 		`CREATE TABLE IF NOT EXISTS data_updates (
@@ -128,6 +130,28 @@ func createTables() error {
 		}
 	}
 	return nil
+}
+
+func ensureSubgroupTextType() error {
+	var dataType string
+	if err := db.QueryRow(`
+		SELECT data_type
+		FROM information_schema.columns
+		WHERE table_name='schedules' AND column_name='subgroup'
+		LIMIT 1
+	`).Scan(&dataType); err != nil {
+		return err
+	}
+	if dataType == "text" || dataType == "character varying" {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE schedules ALTER COLUMN subgroup TYPE TEXT USING subgroup::text`)
+	return err
+}
+
+func ensureLessonTypeColumn() error {
+	_, err := db.Exec(`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS lesson_type TEXT`)
+	return err
 }
 
 func main() {
@@ -147,6 +171,12 @@ func main() {
 
 	if err = createTables(); err != nil {
 		log.Fatalf("db migration failed: %v", err)
+	}
+	if err = ensureSubgroupTextType(); err != nil {
+		log.Fatalf("subgroup type migration failed: %v", err)
+	}
+	if err = ensureLessonTypeColumn(); err != nil {
+		log.Fatalf("lesson_type migration failed: %v", err)
 	}
 
 	r := mux.NewRouter()
@@ -687,10 +717,11 @@ func runScrapeAndUpsert() error {
 			} else if l.Numerator.Val == 0 {
 				mode = "оба"
 			}
-			subgroup := parseSubgroup(l.Subgroup)
+			subgroup := strings.TrimSpace(l.Subgroup)
 			s := Schedule{
 				GroupID:   groupID,
 				DayOfWeek: day,
+				LessonType: strings.TrimSpace(l.Type),
 				Subject:   l.Name,
 				Teacher:   l.Teacher,
 				Room:      l.Room,
@@ -774,21 +805,6 @@ func splitTime(ts string) (string, string) {
 	return matches[0], matches[len(matches)-1]
 }
 
-// Парсит номер подгруппы
-func parseSubgroup(s string) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	if s == "1" || strings.Contains(s, "подгруппа 1") {
-		return 1
-	}
-	if s == "2" || strings.Contains(s, "подгруппа 2") {
-		return 2
-	}
-	return 0
-}
-
 // Добавляет факультет в базу
 func UpsertFaculty(name string) error {
 	_, err := db.Exec(`INSERT INTO faculties (name) VALUES ($1)
@@ -822,11 +838,11 @@ func UpsertGroup(name string, facultyID, eduFormID int) error {
 // Добавляет расписание в базу
 func UpsertSchedule(s Schedule) error {
 	_, err := db.Exec(`INSERT INTO schedules (
-		group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup) VALUES
-		($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		group_id, day_of_week, lesson_type, subject, teacher, room, start_time, end_time, mode, subgroup) VALUES
+		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (group_id, day_of_week, subject, teacher, room, start_time, mode, subgroup)
-		DO UPDATE SET end_time=EXCLUDED.end_time`,
-		s.GroupID, s.DayOfWeek, s.Subject, s.Teacher, s.Room,
+		DO UPDATE SET end_time=EXCLUDED.end_time, lesson_type=EXCLUDED.lesson_type`,
+		s.GroupID, s.DayOfWeek, s.LessonType, s.Subject, s.Teacher, s.Room,
 		s.StartTime, s.EndTime, s.Mode, s.Subgroup,
 	)
 	if err == nil {
@@ -923,7 +939,7 @@ func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "group_id required", http.StatusBadRequest)
 		return
 	}
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, gID)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_type, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, gID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -933,7 +949,7 @@ func getScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s Schedule
 		if err := rows.Scan(
-			&s.ID, &s.GroupID, &s.DayOfWeek, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonType, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
 			&s.Mode, &s.Subgroup,
 		); err != nil {
 			continue
@@ -985,7 +1001,7 @@ func getScheduleByPathHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, group_id, day_of_week, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, groupID)
+	rows, err := db.Query(`SELECT id, group_id, day_of_week, lesson_type, subject, teacher, room, start_time, end_time, mode, subgroup FROM schedules WHERE group_id=$1 ORDER BY day_of_week, start_time, mode, subgroup`, groupID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -995,7 +1011,7 @@ func getScheduleByPathHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s Schedule
 		if err := rows.Scan(
-			&s.ID, &s.GroupID, &s.DayOfWeek, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
+			&s.ID, &s.GroupID, &s.DayOfWeek, &s.LessonType, &s.Subject, &s.Teacher, &s.Room, &s.StartTime, &s.EndTime,
 			&s.Mode, &s.Subgroup,
 		); err != nil {
 			continue

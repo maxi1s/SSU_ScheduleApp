@@ -37,7 +37,8 @@ message ScheduleItem {
     string start_time = 7;
     string end_time = 8;
     string mode = 9;
-    int32 subgroup = 10;
+    string subgroup = 10;
+    string lesson_type = 11;
 }
 
 message FacultiesResponse {
