@@ -219,7 +219,8 @@ class ScheduleItem extends $pb.GeneratedMessage {
     $core.String? startTime,
     $core.String? endTime,
     $core.String? mode,
-    $core.int? subgroup,
+    $core.String? subgroup,
+    $core.String? lessonType,
   }) {
     final result = create();
     if (id != null) result.id = id;
@@ -232,6 +233,7 @@ class ScheduleItem extends $pb.GeneratedMessage {
     if (endTime != null) result.endTime = endTime;
     if (mode != null) result.mode = mode;
     if (subgroup != null) result.subgroup = subgroup;
+    if (lessonType != null) result.lessonType = lessonType;
     return result;
   }
 
@@ -257,7 +259,8 @@ class ScheduleItem extends $pb.GeneratedMessage {
     ..aOS(7, _omitFieldNames ? '' : 'startTime')
     ..aOS(8, _omitFieldNames ? '' : 'endTime')
     ..aOS(9, _omitFieldNames ? '' : 'mode')
-    ..aI(10, _omitFieldNames ? '' : 'subgroup')
+    ..aOS(10, _omitFieldNames ? '' : 'subgroup')
+    ..aOS(11, _omitFieldNames ? '' : 'lessonType')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -361,13 +364,22 @@ class ScheduleItem extends $pb.GeneratedMessage {
   void clearMode() => $_clearField(9);
 
   @$pb.TagNumber(10)
-  $core.int get subgroup => $_getIZ(9);
+  $core.String get subgroup => $_getSZ(9);
   @$pb.TagNumber(10)
-  set subgroup($core.int value) => $_setSignedInt32(9, value);
+  set subgroup($core.String value) => $_setString(9, value);
   @$pb.TagNumber(10)
   $core.bool hasSubgroup() => $_has(9);
   @$pb.TagNumber(10)
   void clearSubgroup() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $core.String get lessonType => $_getSZ(10);
+  @$pb.TagNumber(11)
+  set lessonType($core.String value) => $_setString(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasLessonType() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearLessonType() => $_clearField(11);
 }
 
 class FacultiesResponse extends $pb.GeneratedMessage {

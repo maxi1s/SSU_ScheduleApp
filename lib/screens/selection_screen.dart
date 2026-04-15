@@ -247,6 +247,12 @@ class _SelectionScreenState extends State<SelectionScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Расписание СГУ'),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.only(
+            bottomLeft: Radius.circular(20),
+            bottomRight: Radius.circular(20),
+          ),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),

@@ -66,7 +66,8 @@ const ScheduleItem$json = {
     {'1': 'start_time', '3': 7, '4': 1, '5': 9, '10': 'startTime'},
     {'1': 'end_time', '3': 8, '4': 1, '5': 9, '10': 'endTime'},
     {'1': 'mode', '3': 9, '4': 1, '5': 9, '10': 'mode'},
-    {'1': 'subgroup', '3': 10, '4': 1, '5': 5, '10': 'subgroup'},
+    {'1': 'subgroup', '3': 10, '4': 1, '5': 9, '10': 'subgroup'},
+    {'1': 'lesson_type', '3': 11, '4': 1, '5': 9, '10': 'lessonType'},
   ],
 };
 

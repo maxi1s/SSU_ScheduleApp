@@ -143,6 +143,7 @@ class ApiService {
           'end_time': s.endTime,
           'mode': s.mode,
           'subgroup': s.subgroup,
+          'lesson_type': s.lessonType,
         };
       }).toList();
 

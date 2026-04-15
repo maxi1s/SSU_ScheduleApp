@@ -24,6 +24,7 @@ class MyApp extends StatelessWidget {
             appBarTheme: const AppBarTheme(
               backgroundColor: Colors.blue,
               foregroundColor: Colors.white,
+              surfaceTintColor: Colors.transparent,
             ),
           ),
           darkTheme: ThemeData(
@@ -33,6 +34,7 @@ class MyApp extends StatelessWidget {
             appBarTheme: const AppBarTheme(
               backgroundColor: Color(0xFF1A1A1A),
               foregroundColor: Colors.white,
+              surfaceTintColor: Colors.transparent,
             ),
             cardTheme: const CardThemeData(
               color: Color(0xFF3D3D3D),

@@ -9,7 +9,8 @@ class Schedule {
   final String startTime;
   final String endTime;
   final String mode; // "числитель" или "знаменатель"
-  final int subgroup;
+  final String subgroup;
+  final String lessonType;
 
   Schedule({
     required this.id,
@@ -23,6 +24,7 @@ class Schedule {
     required this.endTime,
     required this.mode,
     required this.subgroup,
+    required this.lessonType,
   });
 
   factory Schedule.fromJson(Map<String, dynamic> json) {
@@ -37,7 +39,8 @@ class Schedule {
       startTime: _toString(json['start_time']),
       endTime: _toString(json['end_time']),
       mode: _toString(json['mode']),
-      subgroup: json['subgroup'] ?? 0,
+      subgroup: _toString(json['subgroup']),
+      lessonType: _toString(json['lesson_type']),
     );
   }
 
@@ -55,7 +58,16 @@ class Schedule {
 
   // Геттер для названия дня недели
   String get dayName {
-    final days = ['', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+    final days = [
+      '',
+      'Понедельник',
+      'Вторник',
+      'Среда',
+      'Четверг',
+      'Пятница',
+      'Суббота',
+      'Воскресенье'
+    ];
     return days[dayOfWeek] ?? 'День $dayOfWeek';
   }
 
@@ -67,4 +79,30 @@ class Schedule {
 
   @override
   String toString() => '$subject ($startTime)';
+
+  // Проверка, идет ли пара сейчас
+  bool get isCurrent {
+    if (startTime.isEmpty || endTime.isEmpty) return false;
+
+    final now = DateTime.now();
+
+    // Проверяем день недели (Dart: 1=ПН, 7=ВС. Наша модель: 1=ПН, 7=ВС)
+    if (now.weekday != dayOfWeek) return false;
+
+    try {
+      final startParts = startTime.split(':');
+      final endParts = endTime.split(':');
+
+      if (startParts.length != 2 || endParts.length != 2) return false;
+
+      final startMinutes =
+          int.parse(startParts[0]) * 60 + int.parse(startParts[1]);
+      final endMinutes = int.parse(endParts[0]) * 60 + int.parse(endParts[1]);
+      final nowMinutes = now.hour * 60 + now.minute;
+
+      return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+    } catch (e) {
+      return false;
+    }
+  }
 }
