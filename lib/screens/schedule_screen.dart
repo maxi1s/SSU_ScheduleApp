@@ -3,6 +3,7 @@ import '../models/schedule.dart';
 import '../models/faculty.dart';
 import '../services/api_service.dart';
 import '../services/widget_service.dart';
+import '../services/theme_service.dart';
 
 class ScheduleScreen extends StatefulWidget {
   final Group selectedGroup;
@@ -83,13 +84,18 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   Color _getTypeColor(String mode) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     switch (mode.toLowerCase()) {
       case 'числитель':
-        return Colors.blue[100]!;
+        return isDark
+            ? const Color.fromARGB(255, 31, 98, 142)
+            : Colors.blue[100]!;
       case 'знаменатель':
-        return Colors.green[100]!;
+        return isDark
+            ? const Color.fromARGB(255, 55, 98, 84)
+            : Colors.green[100]!;
       default:
-        return Colors.grey[100]!;
+        return isDark ? const Color(0xFF424242) : Colors.grey[100]!;
     }
   }
 
@@ -120,11 +126,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Расписание ${widget.selectedGroup.name}'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -142,37 +149,44 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                     ],
                   ),
                 )
-              : Column(
-                  children: [
-                    // Ползунок с днями недели
-                    Container(
-                      height: 60,
-                      color: Colors.grey[50],
+              : ValueListenableBuilder<bool>(
+                  valueListenable: ThemeService().dayBarNotifier,
+                  builder: (context, atBottom, _) {
+                    final dayBar = Container(
+                      padding: EdgeInsets.only(bottom: atBottom ? 20 : 0),
+                      height: 60 + (atBottom ? 20 : 0),
+                      color: isDark ? const Color(0xFF1A1A1A) : Colors.grey[50],
                       child: ListView.builder(
                         scrollDirection: Axis.horizontal,
                         itemCount: daysOfWeek.length,
                         itemBuilder: (context, index) {
+                          final isSelected = selectedDayIndex == index;
                           return GestureDetector(
                             onTap: () => _filterSchedulesByDay(index),
                             child: Container(
                               width: 60,
                               margin: const EdgeInsets.all(8),
                               decoration: BoxDecoration(
-                                color: selectedDayIndex == index
+                                color: isSelected
                                     ? Colors.blue
-                                    : Colors.white,
+                                    : (isDark
+                                        ? const Color(0xFF3D3D3D)
+                                        : Colors.white),
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(
-                                  color: selectedDayIndex == index
+                                  color: isSelected
                                       ? Colors.blue
-                                      : Colors.grey,
+                                      : (isDark
+                                          ? Colors.grey[700]!
+                                          : Colors.grey),
                                 ),
                                 boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.grey.withOpacity(0.3),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
+                                  if (!isDark)
+                                    BoxShadow(
+                                      color: Colors.grey.withOpacity(0.3),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 2),
+                                    ),
                                 ],
                               ),
                               child: Column(
@@ -182,9 +196,11 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                     daysOfWeek[index],
                                     style: TextStyle(
                                       fontWeight: FontWeight.bold,
-                                      color: selectedDayIndex == index
+                                      color: isSelected
                                           ? Colors.white
-                                          : Colors.black,
+                                          : (isDark
+                                              ? Colors.white70
+                                              : Colors.black),
                                       fontSize: 16,
                                     ),
                                   ),
@@ -193,7 +209,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                     width: 6,
                                     height: 6,
                                     decoration: BoxDecoration(
-                                      color: selectedDayIndex == index
+                                      color: isSelected
                                           ? Colors.white
                                           : Colors.transparent,
                                       shape: BoxShape.circle,
@@ -205,83 +221,120 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                           );
                         },
                       ),
-                    ),
+                    );
 
-                    // Заголовок дня
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Text(
-                        _getFullDayName(selectedDayIndex),
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.blue,
-                        ),
-                      ),
-                    ),
-
-                    // Список пар
-                    Expanded(
-                      child: filteredSchedules.isEmpty
-                          ? const Center(
-                              child: Text(
-                                'На этот день пар нет',
-                                style:
-                                    TextStyle(fontSize: 16, color: Colors.grey),
+                    final content = Expanded(
+                      child: Column(
+                        children: [
+                          // Заголовок дня
+                          Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Text(
+                              _getFullDayName(selectedDayIndex),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: isDark ? Colors.blue[300] : Colors.blue,
                               ),
-                            )
-                          : ListView.builder(
-                              itemCount: filteredSchedules.length,
-                              itemBuilder: (context, index) {
-                                final schedule = filteredSchedules[index];
-                                return Card(
-                                  margin: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 4),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: _getTypeColor(schedule.mode),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: ListTile(
-                                      leading: Container(
-                                        width: 60,
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white,
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                        ),
-                                        child: Text(
-                                          schedule.timeRange,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 12,
-                                          ),
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ),
-                                      title: Text(
-                                        schedule.subject,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                        ),
-                                      ),
-                                      subtitle: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(_buildModeRoom(schedule)),
-                                          Text(schedule.teacher),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
                             ),
-                    ),
-                  ],
+                          ),
+
+                          // Список пар
+                          Expanded(
+                            child: filteredSchedules.isEmpty
+                                ? const Center(
+                                    child: Text(
+                                      'На этот день пар нет',
+                                      style: TextStyle(
+                                          fontSize: 16, color: Colors.grey),
+                                    ),
+                                  )
+                                : ListView.builder(
+                                    itemCount: filteredSchedules.length,
+                                    itemBuilder: (context, index) {
+                                      final schedule = filteredSchedules[index];
+                                      final typeColor =
+                                          _getTypeColor(schedule.mode);
+
+                                      return Card(
+                                        margin: const EdgeInsets.symmetric(
+                                            horizontal: 16, vertical: 4),
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: typeColor,
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                          child: ListTile(
+                                            leading: Container(
+                                              width: 60,
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: isDark
+                                                    ? const Color.fromARGB(
+                                                        255, 49, 49, 49)
+                                                    : Colors.white,
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                              child: Text(
+                                                schedule.timeRange,
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 12,
+                                                  color: isDark
+                                                      ? Colors.white
+                                                      : Colors.black,
+                                                ),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ),
+                                            title: Text(
+                                              schedule.subject,
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                                color: isDark
+                                                    ? Colors.white
+                                                    : Colors.black,
+                                              ),
+                                            ),
+                                            subtitle: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  _buildModeRoom(schedule),
+                                                  style: TextStyle(
+                                                    color: isDark
+                                                        ? Colors.white70
+                                                        : Colors.black87,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  schedule.teacher,
+                                                  style: TextStyle(
+                                                    color: isDark
+                                                        ? Colors.white60
+                                                        : Colors.black54,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    return Column(
+                      children:
+                          atBottom ? [content, dayBar] : [dayBar, content],
+                    );
+                  },
                 ),
     );
   }

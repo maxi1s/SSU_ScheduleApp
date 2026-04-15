@@ -5,6 +5,7 @@ import '../models/faculty.dart';
 import '../services/api_service.dart';
 import '../services/widget_service.dart';
 import 'schedule_screen.dart';
+import 'settings_screen.dart';
 import '../widgets/custom_dropdown.dart';
 
 class SelectionScreen extends StatefulWidget {
@@ -207,6 +208,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
         appBar: AppBar(
           title: const Text('Ошибка'),
           backgroundColor: Colors.red,
+          foregroundColor: Colors.white,
         ),
         body: Center(
           child: Padding(
@@ -218,7 +220,12 @@ class _SelectionScreenState extends State<SelectionScreen> {
                 const SizedBox(height: 20),
                 Text(
                   errorMessage,
-                  style: const TextStyle(fontSize: 16),
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.white70
+                        : Colors.black87,
+                  ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 30),
@@ -240,8 +247,17 @@ class _SelectionScreenState extends State<SelectionScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Расписание СГУ'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              );
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -289,8 +305,9 @@ class _SelectionScreenState extends State<SelectionScreen> {
             ElevatedButton(
               onPressed: selectedGroup != null ? _showSchedule : null,
               style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    selectedGroup != null ? Colors.blue : Colors.grey,
+                backgroundColor: selectedGroup != null
+                    ? Theme.of(context).primaryColor
+                    : Colors.grey,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 50),
               ),

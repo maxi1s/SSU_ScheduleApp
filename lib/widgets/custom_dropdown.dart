@@ -70,6 +70,9 @@ class _CustomDropdownState<T> extends State<CustomDropdown<T>>
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -79,7 +82,9 @@ class _CustomDropdownState<T> extends State<CustomDropdown<T>>
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.bold,
-            color: widget.enabled ? Colors.black87 : Colors.grey,
+            color: widget.enabled
+                ? (isDark ? Colors.white70 : Colors.black87)
+                : Colors.grey,
           ),
         ),
         const SizedBox(height: 8),
@@ -87,12 +92,14 @@ class _CustomDropdownState<T> extends State<CustomDropdown<T>>
         // Основной контейнер дропдауна
         Container(
           decoration: BoxDecoration(
-            color: widget.enabled ? Colors.white : Colors.grey[100],
+            color: widget.enabled
+                ? theme.cardColor
+                : (isDark ? Colors.grey[800] : Colors.grey[100]),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: widget.enabled
                   ? (_isExpanded ? Colors.blue : Colors.grey)
-                  : Colors.grey[300]!,
+                  : (isDark ? Colors.grey[700]! : Colors.grey[300]!),
               width: _isExpanded ? 2 : 1,
             ),
             boxShadow: [
@@ -116,8 +123,12 @@ class _CustomDropdownState<T> extends State<CustomDropdown<T>>
                       ? _getDisplayText(widget.value as T)
                       : 'Выберите ${widget.title.toLowerCase()}',
                   style: TextStyle(
-                    color: widget.value != null ? Colors.black87 : Colors.grey,
-                    fontWeight: widget.value != null ? FontWeight.w500 : FontWeight.normal,
+                    color: widget.value != null
+                        ? (isDark ? Colors.white : Colors.black87)
+                        : Colors.grey,
+                    fontWeight: widget.value != null
+                        ? FontWeight.w500
+                        : FontWeight.normal,
                   ),
                 ),
                 trailing: RotationTransition(
@@ -151,24 +162,35 @@ class _CustomDropdownState<T> extends State<CustomDropdown<T>>
                             duration: const Duration(milliseconds: 200),
                             decoration: BoxDecoration(
                               color: isSelected
-                                  ? Colors.blue[50]
-                                  : (Theme.of(context).hoverColor),
+                                  ? (isDark
+                                      ? Colors.blue.withOpacity(0.2)
+                                      : Colors.blue[50])
+                                  : Colors.transparent,
                               border: Border(
                                 bottom: BorderSide(
-                                  color: Colors.grey[200]!,
+                                  color: isDark
+                                      ? Colors.grey[700]!
+                                      : Colors.grey[200]!,
                                   width: 0.5,
                                 ),
                               ),
                             ),
                             child: ListTile(
                               leading: isSelected
-                                  ? const Icon(Icons.check, color: Colors.blue, size: 20)
+                                  ? const Icon(Icons.check,
+                                      color: Colors.blue, size: 20)
                                   : const SizedBox(width: 20),
                               title: Text(
                                 _getDisplayText(item),
                                 style: TextStyle(
-                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                  color: isSelected ? Colors.blue : Colors.black87,
+                                  color: isSelected
+                                      ? Colors.blue
+                                      : (isDark
+                                          ? Colors.white
+                                          : Colors.black87),
+                                  fontWeight: isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
                                 ),
                               ),
                             ),
