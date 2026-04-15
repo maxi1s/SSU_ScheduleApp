@@ -152,6 +152,7 @@ func main() {
 	r := mux.NewRouter()
 	api := r.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/faculties", getFacultiesHandler).Methods("GET")
+	api.HandleFunc("/faculties/{id:[0-9]+}", getFacultyHandler).Methods("GET")
 	api.HandleFunc("/faculties", createFacultyHandler).Methods("POST")
 	api.HandleFunc("/faculties/{id:[0-9]+}", updateFacultyHandler).Methods("PUT")
 	api.HandleFunc("/faculties/{id:[0-9]+}", patchFacultyHandler).Methods("PATCH")
@@ -343,7 +344,7 @@ type scrapeCommand struct {
 	Action string `json:"action"`
 }
 
-// Потребляет команды из Kafka
+// Принимает команды из Kafka
 func startKafkaScrapeCommandConsumer() {
 	if len(kafkaBrokers) == 0 || strings.TrimSpace(kafkaTopicScrapeCommands) == "" {
 		return
@@ -870,6 +871,23 @@ func getFacultiesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// Возвращает факультет по ID
+func getFacultyHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	var f Faculty
+	err := db.QueryRow("SELECT id, name FROM faculties WHERE id = $1", id).Scan(&f.ID, &f.Name)
+	if err == sql.ErrNoRows {
+		http.Error(w, "faculty not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(f)
 }
 
 // Возвращает список групп по факультету и форме обучения
